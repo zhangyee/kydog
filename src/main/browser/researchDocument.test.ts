@@ -424,3 +424,26 @@ it('keeps supported body text while sanitizing an unrelated comment widget witho
   expect(result.html).not.toContain('widget-private-markup');
   expect(f.document.querySelector('.g-recaptcha')?.textContent).toBe('widget-private-markup');
 });
+
+it('preserves exact navigation invalidation during deferred setup without classifying a message lookalike', async () => {
+  const f = bridgeFixture(), good = await f.open();
+  expect((await good.capture(10000)).status).toBe('snapshot');
+  await good.dispose();
+  const send = f.port.sendCommand;
+  let release!:()=>void, reached!:()=>void;
+  const entered = new Promise<void>(resolve=>{reached=resolve;});
+  f.port.sendCommand = async (method,params)=>{
+    const result = await send(method,params);
+    if(method==='Page.enable'){reached();await new Promise<void>(resolve=>{release=resolve;});}
+    return result;
+  };
+  const opening = f.open();
+  const rejected = expect(opening).rejects.toMatchObject({name:'ResearchDocumentInvalidatedError',reason:'document_navigation'});
+  await entered;
+  f.setLocation({documentEpoch:5,navigationSequence:14});
+  for(const invalidate of f.invalidators) invalidate('document_navigation');
+  release(); await rejected;
+  const lookalike = new Error('document_navigation');
+  f.port.sendCommand = async ()=>{throw lookalike;};
+  await expect(f.open()).rejects.toBe(lookalike);
+});

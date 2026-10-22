@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { BrowserService } from '../browser/browserService';
-import type { ResearchDocumentLease } from '../browser/researchDocument';
+import { ResearchDocumentInvalidatedError, type ResearchDocumentLease } from '../browser/researchDocument';
 import type { BrowserLeaseUnavailable, BrowserReadResult, BrowserReader, BrowserSourceKey, ResearchDocumentSnapshot } from './browserReadTypes';
 
 const abortError = () => new DOMException('Browser read cancelled', 'AbortError');
@@ -48,6 +48,7 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
   const leases = new Map<string, SourceLease>();
   const attempts = new Map<string, AbortController>();
   const operations = new Set<AbortController>();
+  const sourceOperations = new Map<string, Set<AbortController>>();
   const lifecycle = new Set<(event: BrowserLeaseUnavailable) => void>();
   let disposed = false;
   const markUnavailable = (tabId: string, reason: string) => {
@@ -65,13 +66,18 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
     const lease = leases.get(keyOf(key));
     return lease && !lease.unavailable && browser.researchTabStatus(lease.tabId, key.threadId) === 'available' ? lease : undefined;
   }
-  function operation(signal: AbortSignal): { controller: AbortController; cleanup: () => void } {
+  function operation(key: BrowserSourceKey, signal: AbortSignal): { controller: AbortController; cleanup: () => void } {
     if (disposed) throw new Error('browser_reader_disposed');
     checkSignal(signal);
     const controller = new AbortController();
+    const id = keyOf(key), pending = sourceOperations.get(id) ?? new Set<AbortController>();
+    pending.add(controller); sourceOperations.set(id, pending);
     const abort = () => controller.abort(signal.reason ?? abortError());
     signal.addEventListener('abort', abort, { once: true }); operations.add(controller);
-    return { controller, cleanup: () => { signal.removeEventListener('abort', abort); operations.delete(controller); } };
+    return { controller, cleanup: () => {
+      signal.removeEventListener('abort', abort); operations.delete(controller); pending.delete(controller);
+      if (sourceOperations.get(id) === pending && pending.size === 0) sourceOperations.delete(id);
+    } };
   }
   async function open(input: BrowserSourceKey & { requestedUrl: string; beforeNavigate: () => Promise<void>; attemptId?: string | null }, signal: AbortSignal): Promise<SourceLease & { outcome: Awaited<ReturnType<BrowserService['open']>>['nav']['outcome'] }> {
     await interrupted(input.beforeNavigate(), signal); checkSignal(signal);
@@ -89,6 +95,7 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
       if (signal.aborted && leases.get(keyOf(input))?.tabId !== opened.tabId && browser.researchOwnsTab(opened.tabId, input.threadId)) browser.close(opened.tabId);
     }, () => {});
     const opened = await interrupted(opening, signal);
+    checkSignal(signal);
     const lease: SourceLease = { key: { threadId: input.threadId, researchRunId: input.researchRunId, sourceId: input.sourceId }, leaseId: randomUUID(), attemptId: input.attemptId ?? null, tabId: opened.tabId, requestedUrl: canonical(input.requestedUrl), urls: new Set(browser.researchNavigationUrls(opened.tabId, opened.nav.navigationId).map(canonical)) };
     lease.urls.add(lease.requestedUrl);
     leases.set(keyOf(input), lease);
@@ -98,7 +105,7 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
     onLeaseUnavailable(listener) { lifecycle.add(listener); return () => { lifecycle.delete(listener); }; },
     currentTab(key) { return current(key)?.tabId; },
     async read(input) {
-      const id = keyOf(input), op = operation(input.signal), controller = op.controller;
+      const id = keyOf(input), op = operation(input, input.signal), controller = op.controller;
       attempts.get(id)?.abort(new Error('browser_attempt_superseded')); attempts.set(id, controller);
       let unlock: (() => void) | undefined, timer: ReturnType<typeof setTimeout> | undefined, timedOut = false;
       let lease: SourceLease | undefined;
@@ -132,6 +139,7 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
         };
         return await browser.withResearchDriving(activeLease.tabId, input.threadId, async () => {
           let observed: ResearchDocumentLease | undefined;
+          let primaryFailure = false;
           try {
             while (true) {
               checkSignal(controller.signal);
@@ -147,7 +155,16 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
                 if (reason) return waiting(reason);
                 continue;
               }
-              observed ??= await interrupted(browser.observeResearchDocument({ tabId: activeLease.tabId, ownerThreadId: input.threadId, signal: controller.signal }), controller.signal);
+              if (!observed) {
+                try {
+                  observed = await interrupted(browser.observeResearchDocument({ tabId: activeLease.tabId, ownerThreadId: input.threadId, signal: controller.signal }), controller.signal);
+                } catch (error) {
+                  // Only the observer's exact source fact can trigger rebinding.
+                  // The next iteration rechecks lease, pending target and identity.
+                  if (error instanceof ResearchDocumentInvalidatedError) continue;
+                  throw error;
+                }
+              }
               const maxBytes = await interrupted(owner(input.remainingDomBytes), controller.signal);
               const capture = await interrupted(observed.capture(maxBytes), controller.signal);
               const facts = { finalUrl: location.currentUrl, ...(capture.mainStatusCode === undefined ? {} : { mainStatusCode: capture.mainStatusCode }) };
@@ -169,12 +186,17 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
               if (capture.mainStatusCode === 401 || capture.mainStatusCode === 403) return waiting(`http_${capture.mainStatusCode}`, facts);
               await interrupted(observed.waitForChange(capture.revision), controller.signal);
             }
+          } catch (error) {
+            primaryFailure = true;
+            throw error;
           } finally {
             if (observed) {
               // Lease disposal unsubscribes immediately. CDP acknowledgements may
               // still be in flight; they cannot extend the automatic-read slot.
-              const cleanup = observed.dispose();
-              if (controller.signal.aborted) void cleanup.catch(() => {});
+              // Convert synchronous disposal throws to a handled promise too.
+              // A pending primary failure keeps its original identity.
+              const cleanup = (async () => { await observed!.dispose(); })();
+              if (controller.signal.aborted || primaryFailure) void cleanup.catch(() => {});
               else await interrupted(cleanup, controller.signal);
             }
           }
@@ -193,7 +215,7 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
       }
     },
     async openForUser(input) {
-      const op = operation(input.signal);
+      const op = operation(input, input.signal);
       try {
         const lease = current(input) ?? await open(input, op.controller.signal);
         checkSignal(op.controller.signal);
@@ -207,7 +229,9 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
     },
     async release(key, options) {
       const id = keyOf(key), lease = leases.get(id);
-      attempts.get(id)?.abort(new Error('browser_lease_released')); attempts.delete(id); leases.delete(id);
+      const pending = sourceOperations.get(id); sourceOperations.delete(id);
+      for (const controller of pending ?? []) controller.abort(new Error('browser_lease_released'));
+      attempts.delete(id); leases.delete(id);
       if (lease && options.closeOwned && browser.researchOwnsTab(lease.tabId, key.threadId)) browser.close(lease.tabId);
     },
     async dispose() {

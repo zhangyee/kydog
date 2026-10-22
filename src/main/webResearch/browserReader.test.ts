@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserService } from '../browser/browserService';
-import type { ResearchDocumentCapture } from '../browser/researchDocument';
+import { ResearchDocumentInvalidatedError, type ResearchDocumentCapture } from '../browser/researchDocument';
 import type { BrowserReadInput, ResearchDocumentSnapshot } from './browserReadTypes';
 import { createBrowserReader } from './browserReader';
 
@@ -307,5 +307,123 @@ it('handles a callback cancelling synchronously without leaving an unhandled rej
   await expect(f.reader.read(f.input({signal:cancel.signal,beforeNavigate:async()=>{cancel.abort(cancelled);throw callbackError;}}))).rejects.toBe(cancelled);
   await flush();
   expect((await f.reader.read(f.input())).status).toBe('readable');
+  await f.reader.dispose();
+});
+
+it('invalidates a pending user reservation on source release and lets a fresh source action succeed', async () => {
+  const f = fixture(), a = f.input();
+  const initial = await f.reader.openForUser(a);
+  expect(f.reader.currentTab(a)).toBe(initial.tabId);
+  await f.reader.release(a,{closeOwned:true});
+  const reservation = deferred<void>();
+  const pending = f.reader.openForUser({...a,beforeNavigate:()=>reservation.promise});
+  const settled = pending.then(value=>({value}),error=>({error}));
+  await flush(); await f.reader.release(a,{closeOwned:true});
+  reservation.resolve();
+  expect(await settled).toMatchObject({error:expect.any(Error)});
+  expect(f.browser.open).toHaveBeenCalledTimes(1);
+  expect(f.reader.currentTab(a)).toBeUndefined();
+  const fresh = await f.reader.openForUser(a);
+  expect(f.reader.currentTab(a)).toBe(fresh.tabId);
+  await f.reader.dispose();
+});
+
+it('closes a stale user-open receipt after release while preserving a newer source association', async () => {
+  const f = fixture(), a = f.input();
+  const first = await f.reader.openForUser(a);
+  expect(f.tabs.has(first.tabId)).toBe(true);
+  await f.reader.release(a,{closeOwned:true});
+  const open = f.browser.open.getMockImplementation()!, receipt = deferred<Awaited<ReturnType<typeof open>>>();
+  let oldReceipt: Awaited<ReturnType<typeof open>> | undefined;
+  f.browser.open.mockImplementationOnce(async args=>{oldReceipt=await open(args);return receipt.promise;});
+  const pending = f.reader.openForUser(a).then(value=>({value}),error=>({error}));
+  await flush(); expect(f.tabs.has('tab-2')).toBe(true);
+  await f.reader.release(a,{closeOwned:true});
+  const fresh = await f.reader.openForUser(a);
+  expect(f.reader.currentTab(a)).toBe(fresh.tabId);
+  receipt.resolve(oldReceipt!); await flush();
+  expect(await pending).toMatchObject({error:expect.any(Error)});
+  expect(f.tabs.has('tab-2')).toBe(false);
+  expect(f.tabs.has(fresh.tabId)).toBe(true);
+  expect(f.reader.currentTab(a)).toBe(fresh.tabId);
+  expect(f.browser.activate).toHaveBeenCalledTimes(2);
+  await f.reader.dispose();
+});
+
+it.each([false,true])('preserves an owner callback failure with synchronous cleanup=%s while retaining cleanup-only failures', async synchronous => {
+  const f = fixture(), a = f.input(), ownerError = new Error('owner persistence failed'), cleanupError = new Error('cleanup CDP failed');
+  expect((await f.reader.read(a)).status).toBe('readable');
+  const observe = f.browser.observeResearchDocument.getMockImplementation()!;
+  f.browser.observeResearchDocument.mockImplementation(async args=>({...await observe(args),dispose:()=>{if(synchronous)throw cleanupError;return Promise.reject(cleanupError);}}));
+  await expect(f.reader.read({...a,mode:'capture_existing'})).rejects.toBe(cleanupError);
+  await expect(f.reader.read({...a,mode:'capture_existing',onDocument:async()=>{throw ownerError;}})).rejects.toBe(ownerError);
+  expect(f.stats().driving).toBe(0);
+  await f.reader.dispose();
+});
+
+it.each([false,true])('rechecks a deferred observer setup navigation and rejects foreign pending targets=%s', async foreign => {
+  const f = fixture(), callback = vi.fn(async()=>'accepted' as const), a = f.input({onDocument:callback});
+  expect((await f.reader.read(a)).status).toBe('readable');
+  expect(callback).toHaveBeenCalledTimes(1);
+  const entered = deferred<void>(), setup = deferred<void>();
+  f.browser.observeResearchDocument.mockImplementationOnce(async()=>{
+    entered.resolve(); await setup.promise;
+    throw new ResearchDocumentInvalidatedError('document_navigation');
+  });
+  const reading = f.reader.read({...a,mode:'capture_existing',attemptId:'setup-navigation'}).then(value=>({value}),error=>({error}));
+  await entered.promise;
+  const tab = f.tabs.get('tab-1')!;
+  tab.sequence++; tab.navigationEvent='did-start-navigation'; tab.navigationType='cross_document';
+  tab.navigationUrl=foreign?'https://article.example/foreign':url;
+  setup.resolve(); await flush();
+  if (!foreign) {
+    expect(f.browser.waitForResearchNavigation).toHaveBeenCalledTimes(1);
+    expect(callback).toHaveBeenCalledTimes(1);
+    tab.epoch++; tab.sequence++; tab.navigationEvent='did-navigate';
+    for(const wake of f.wake) wake(); f.wake.clear();
+    expect(await reading).toMatchObject({value:{status:'readable',document:{identity:{documentEpoch:2,navigationSequence:4}}}});
+    expect(callback).toHaveBeenCalledTimes(2);
+    expect(f.browser.observeResearchDocument).toHaveBeenCalledTimes(3);
+  } else {
+    expect(await reading).toMatchObject({value:{status:'waiting_user',reason:'user_navigated',finalUrl:'https://article.example/foreign'}});
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(f.browser.observeResearchDocument).toHaveBeenCalledTimes(2);
+  }
+  expect(a.beforeNavigate).toHaveBeenCalledTimes(1);
+  await f.reader.dispose();
+});
+
+it('does not treat CDP or owner navigation-message lookalikes as setup invalidation', async () => {
+  const f = fixture(), a = f.input();
+  expect((await f.reader.read(a)).status).toBe('readable');
+  for(const error of [new Error('document_navigation'),new ResearchDocumentInvalidatedError('document_navigation')]) {
+    await expect(f.reader.read({...a,mode:'capture_existing',onDocument:async()=>{throw error;}})).rejects.toBe(error);
+    await expect(f.reader.read({...a,mode:'navigate',beforeNavigate:async()=>{throw error;}})).rejects.toBe(error);
+  }
+  const cdpError = new Error('document_navigation');
+  f.browser.observeResearchDocument.mockImplementationOnce(async()=>{throw cdpError;});
+  await expect(f.reader.read({...a,mode:'capture_existing'})).rejects.toBe(cdpError);
+  expect(f.browser.observeResearchDocument).toHaveBeenCalledTimes(4);
+  expect(f.browser.open).toHaveBeenCalledTimes(1);
+  await f.reader.dispose();
+});
+
+it('keeps the original read deadline after setup invalidation and allows a fresh later retry', async () => {
+  vi.useFakeTimers();
+  const f = fixture(), a = f.input();
+  expect((await f.reader.read(a)).status).toBe('readable');
+  const setup = deferred<void>();
+  f.browser.observeResearchDocument.mockImplementationOnce(async()=>{await setup.promise;throw new ResearchDocumentInvalidatedError('document_identity_changed');});
+  f.tabs.get('tab-1')!.capture=async()=>({status:'pending',reason:'article_root_missing',revision:0});
+  const reading=f.reader.read({...a,mode:'capture_existing'});
+  await flush(); await vi.advanceTimersByTimeAsync(29_000);
+  f.tabs.get('tab-1')!.epoch++; f.tabs.get('tab-1')!.sequence++;
+  setup.resolve(); await flush();
+  expect(f.browser.observeResearchDocument).toHaveBeenCalledTimes(3);
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(await reading).toMatchObject({status:'waiting_user',reason:'browser_read_timeout'});
+  expect(f.stats().driving).toBe(0);
+  f.tabs.get('tab-1')!.capture=async()=>({status:'snapshot',revision:1,document:f.snapshot('tab-1')});
+  expect((await f.reader.read({...a,mode:'capture_existing'})).status).toBe('readable');
   await f.reader.dispose();
 });

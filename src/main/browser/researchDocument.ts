@@ -7,6 +7,12 @@ export type ResearchDocumentCapture = { revision: number; mainStatusCode?: numbe
   | { status: 'pending' | 'invalidated'; reason: string }
   | { status: 'oversize'; utf8Bytes: number }
 );
+/** An exact native/document identity invalidation during observer setup. */
+export class ResearchDocumentInvalidatedError extends Error {
+  constructor(readonly reason: 'document_navigation' | 'document_identity_changed' | 'document_destroyed') {
+    super(reason); this.name = 'ResearchDocumentInvalidatedError';
+  }
+}
 export interface ResearchDocumentLease {
   capture(maxBytes: number): Promise<ResearchDocumentCapture>;
   waitForChange(afterRevision: number): Promise<void>;
@@ -106,11 +112,17 @@ export async function observeResearchDocument(port: ResearchDocumentPort, signal
     active();
     observed = true;
     const ready = await evaluate('observe', { bindingName, verificationSelector: VERIFICATION_WIDGET_SELECTOR });
-    if (ready?.status !== 'observing' || ready.url !== initial.currentUrl || !check()) throw new Error('research_document_identity_changed');
+    if (ready?.status !== 'observing') throw new Error('research_document_evaluation_failed');
+    if (ready.url !== initial.currentUrl) invalidate('document_identity_changed');
+    active();
     revision = Math.max(revision, ready.revision);
   })();
   try { await setup; } catch (error) {
+    const reason = invalidated;
     await dispose().catch(() => {});
+    if (reason === 'document_navigation' || reason === 'document_identity_changed' || reason === 'document_destroyed') {
+      throw new ResearchDocumentInvalidatedError(reason);
+    }
     throw error;
   }
   return {
