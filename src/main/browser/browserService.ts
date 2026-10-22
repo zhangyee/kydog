@@ -1,8 +1,9 @@
+import { observeResearchDocument, type ResearchDocumentLease } from './researchDocument';
 import { NetworkResponseObserver, type BrowserNetworkSpec, type BrowserNetworkLease } from './networkResponses';
 import {observeSourceDeadline,observeSourceNative,type SourceEvaluation} from './sourceEvaluationDiagnostic';
 import {
   BrowserWindow, WebContentsView, session,
-  type WebContents, type Session, type DownloadItem,
+  type WebContents, type Session, type DownloadItem, type Event, type WebContentsDidStartNavigationEventParams,
 } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { KydogError } from '../../shared/errors';
@@ -271,6 +272,7 @@ export class BrowserService {
   private readonly registry = new TabRegistry();
   private readonly views = new Map<string, WebContentsView>();
   private readonly locations = new Map<string, BrowserLocationFacts>();
+  private readonly documentStatusCodes = new Map<string, number>();
   private readonly tabUnavailable = new Set<(tabId: string, reason: string) => void>();
   /**
    * 每个标签**已经落地**的 emulation scale（最近一次 `setDeviceMetricsOverride` 成功时带的那个）。
@@ -1065,6 +1067,8 @@ export class BrowserService {
         }
       }
       const prior = this.locations.get(id);
+      if (Number.isInteger(httpResponseCode) && httpResponseCode >= 100 && httpResponseCode <= 599) this.documentStatusCodes.set(id, httpResponseCode);
+      else this.documentStatusCodes.delete(id);
       this.locations.set(id, { currentUrl: url, documentEpoch: (prior?.documentEpoch ?? 0) + 1,
         routeRevision: prior?.routeRevision ?? 0, navigationEvent: 'did-navigate',
         navigationSequence: (prior?.navigationSequence ?? 0) + 1, navigationType: 'cross_document', navigationUrl: url });
@@ -1210,6 +1214,7 @@ export class BrowserService {
     this.pristineViews.delete(id);
     this.views.delete(id);
     this.locations.delete(id);
+    this.documentStatusCodes.delete(id);
     this.snapshots.delete(id);
     this.emulationScales.delete(id);
     this.viewportGenerations.delete(id);
@@ -1267,6 +1272,56 @@ export class BrowserService {
     if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
     return { ...(this.locations.get(tabId) ?? { documentEpoch: 0, routeRevision: 0, navigationEvent: null, navigationSequence: 0, navigationType: null, navigationUrl: null }),
       currentUrl: wc.getURL() };
+  }
+
+  /** Trusted research-only transport. The binding is scoped to one isolated main-frame world. */
+  async observeResearchDocument(input: { tabId: string; ownerThreadId: string; signal: AbortSignal }): Promise<ResearchDocumentLease> {
+    const { tabId, ownerThreadId, signal } = input;
+    assertNotAborted(signal);
+    const wc = this.webContentsOf(tabId);
+    if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
+    const check = () => {
+      if (this.researchTabStatus(tabId, ownerThreadId) === 'foreign') throw new KydogError('browser.not_dispatchable', '研究标签不属于当前对话');
+      if (this.webContentsOf(tabId) !== wc || wc.isDestroyed()) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
+      BrowserService.assertRenderProcess(tabId, wc);
+      if (!wc.debugger.isAttached()) throw new KydogError('browser.not_dispatchable', '页面调试会话不可用');
+      assertAllowedUrl(wc.getURL());
+    };
+    check();
+    return observeResearchDocument({
+      location: () => {
+        check();
+        return { ...this.locationFacts(tabId), mainStatusCode: this.documentStatusCodes.get(tabId) };
+      },
+      sendCommand: async (method, params) => {
+        check();
+        let timer: NodeJS.Timeout | undefined;
+        const deadline = new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new KydogError('browser.page_no_result', '研究正文页面求值没有在资源时限内返回')), PAGE_EVAL_TIMEOUT_MS);
+        });
+        try { return await Promise.race([wc.debugger.sendCommand(method, params), deadline]); }
+        finally { if (timer) clearTimeout(timer); }
+      },
+      subscribe: listener => {
+        const message = (_event: Event, method: string, params: Record<string, any>, sessionId?: string) => listener(method, params, sessionId);
+        wc.debugger.on('message', message);
+        return () => { wc.debugger.off('message', message); };
+      },
+      subscribeInvalidation: listener => {
+        const gone = () => listener('renderer_unavailable');
+        const navigate = (details: Event<WebContentsDidStartNavigationEventParams>) => { if (details.isMainFrame) listener('document_navigation'); };
+        const committed = () => listener('document_navigation');
+        const inPage = (_event: Event, _url: string, isMainFrame: boolean) => { if (isMainFrame) listener('document_navigation'); };
+        const offDestroyed = this.onTabDestroyed(id => { if (id === tabId) listener('tab_closed'); });
+        wc.on('destroyed', gone); wc.on('render-process-gone', gone); wc.debugger.on('detach', gone);
+        wc.on('did-start-navigation', navigate); wc.on('did-navigate', committed); wc.on('did-navigate-in-page', inPage);
+        return () => {
+          offDestroyed();
+          wc.off('destroyed', gone); wc.off('render-process-gone', gone); wc.debugger.off('detach', gone);
+          wc.off('did-start-navigation', navigate); wc.off('did-navigate', committed); wc.off('did-navigate-in-page', inPage);
+        };
+      },
+    }, signal);
   }
 
   // ── 对外操作 ────────────────────────────────────────────────────────────

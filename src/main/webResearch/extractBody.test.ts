@@ -1,3 +1,5 @@
+import { JSDOM } from 'jsdom';
+import RESEARCH_DOCUMENT_SOURCE from '../browser/injected/researchDocument.js?raw';
 import { describe, expect, it } from 'vitest';
 import { extractBody } from './extractBody';
 
@@ -91,5 +93,35 @@ describe('extractBody', () => {
     const body = await extractBody({ bytes: bytes(html), contentType: 'text/html', finalUrl, sourceId });
     expect(body.status).toBe('needs_browser');
     expect(body.passages).toEqual([]);
+  });
+});
+
+// Inert reduced fixtures: InfoQ's observed HTTP-200 HTML was an empty #app shell.
+// The dynamic InfoQ root below is synthetic, grounded in captured production
+// PageArticle.5d9af252.js, not a claimed successful live-rendered InfoQ capture.
+// CSDN's root and first paragraphs are reduced from its successful captured HTML.
+describe('extractBody browser research captures', () => {
+  it.each([
+    ['https://xie.infoq.cn/article/065582fc9836ef5ec6ebe2434', '<div id="app"></div><script src="/main.js"></script>',
+      '<div class="article-detaile"><div class="article-preview"><h1>语音决策模型</h1><p>正文证据：模型直接从语音决定工具调用。</p></div></div>', '正文证据'],
+    ['https://blog.csdn.net/deepseek23/article/details/167312853', '<script>document.cookie="challenge"</script>',
+      '<div id="content_views" class="htmledit_views atom-one-light"><p style="text-align:center">10 月 2 日，Cactus Compute 放出开源语音识别模型 Whistle，单文件只有 16.9 兆。</p><p>它跑在 CPU 上，无依赖，不碰显卡，也不碰任何云端接口。</p></div>', 'Cactus Compute'],
+  ])('feeds a supported DOM capture back into the existing extractor: %s', async (url, staticHtml, dynamicHtml, evidence) => {
+    const staticBody = await extractBody({ bytes: bytes(staticHtml), contentType: 'text/html', finalUrl: url, sourceId });
+    expect(staticBody.status).toBe('needs_browser');
+    const dom = new JSDOM(staticHtml, { url, runScripts: 'outside-only' });
+    try {
+      Object.assign(dom.window, { TextEncoder });
+      const run = (op: string): any => dom.window.eval(`(${RESEARCH_DOCUMENT_SOURCE})(${JSON.stringify({ op, token: 'extract-test', url, maxBytes: 100_000 })})`);
+      run('observe');
+      expect(run('capture').status).toBe('pending');
+      dom.window.document.body.innerHTML = dynamicHtml;
+      const capture = run('capture');
+      expect(capture.status).toBe('snapshot');
+      const body = await extractBody({ bytes: bytes(capture.html), contentType: 'text/html', finalUrl: url, sourceId });
+      expect(body.status).toBe('readable');
+      expect(body.passages.map(passage => passage.text).join(' ')).toContain(evidence);
+      run('dispose');
+    } finally { dom.window.__kydogResearchDocument?.observer.disconnect(); dom.window.close(); }
   });
 });

@@ -1,3 +1,4 @@
+import { JSDOM } from 'jsdom';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import WALKER_SOURCE from './injected/walker.js?raw';
 import PW_REGISTRAR_SOURCE from './injected/pwRegistrar.js?raw';
@@ -5485,5 +5486,97 @@ describe('failed live network teardown', () => {
     expect(recovered.nav.outcome.kind).toBe('ok');
     expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable','Network.disable','Network.enable']);
     await recovered.networkLease!.close('done');
+  });
+});
+
+describe('researchDocument BrowserService integration', () => {
+  async function researchTab() {
+    const { svc } = make();
+    const { wc, nav } = await openTab(svc, 'https://article.example/read', 'research-thread');
+    const dom = new JSDOM('<title>Evidence</title><article><p>正文证据</p></article>', { url: wc.url, runScripts: 'outside-only' });
+    Object.assign(dom.window, { TextEncoder });
+    wc.debugger.respond = async (method, params = {}) => {
+      if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'research-main-frame' } } };
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: 91 };
+      if (method === 'Runtime.addBinding') {
+        Object.assign(dom.window, { [String(params.name)]: (payload: string) => {
+          wc.debugger.fire('message', {}, 'Runtime.bindingCalled', { name: params.name, executionContextId: 91, payload });
+        } });
+      }
+      if (method === 'Runtime.evaluate') return { result: { value: dom.window.eval(String(params.expression)) } };
+      return {};
+    };
+    return { svc, wc, tabId: nav.tabId, dom };
+  }
+
+  it('captures through a uniquely named isolated main-frame context and rejects foreign ownership', async () => {
+    const f = await researchTab();
+    try {
+      const lease = await f.svc.observeResearchDocument({ tabId: f.tabId, ownerThreadId: 'research-thread', signal: new AbortController().signal });
+      const captured = await lease.capture(100_000);
+      expect(captured).toMatchObject({ status: 'snapshot', document: { url: f.wc.url, mainStatusCode: 200 } });
+      const world = f.wc.debugger.sent.find(c => c.method === 'Page.createIsolatedWorld')!;
+      expect(world.params.frameId).toBe('research-main-frame');
+      expect(world.params.grantUniveralAccess).toBe(false);
+      const binding = f.wc.debugger.sent.find(c => c.method === 'Runtime.addBinding')!;
+      expect(binding.params.executionContextName).toBe(world.params.worldName);
+      expect(f.wc.debugger.sent.filter(c => c.method === 'Runtime.evaluate').every(c => c.params.contextId === 91 && c.params.awaitPromise === false)).toBe(true);
+      await expect(f.svc.observeResearchDocument({ tabId: f.tabId, ownerThreadId: 'foreign-thread', signal: new AbortController().signal })).rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+      await lease.dispose();
+    } finally { f.dom.window.close(); f.svc.disposeAll(); }
+  });
+
+  it('keeps an idle wait alive past the evaluation deadline without polling', async () => {
+    const f = await researchTab();
+    vi.useFakeTimers();
+    try {
+      const lease = await f.svc.observeResearchDocument({ tabId: f.tabId, ownerThreadId: 'research-thread', signal: new AbortController().signal });
+      const capture = await lease.capture(100_000);
+      let woke = false;
+      const waiting = lease.waitForChange(capture.revision).then(() => { woke = true; });
+      const commands = f.wc.debugger.sent.length;
+      await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS * 3);
+      expect(woke).toBe(false);
+      expect(f.wc.debugger.sent.length).toBe(commands);
+      f.dom.window.document.querySelector('article')!.append('changed');
+      await waiting;
+      expect(woke).toBe(true);
+      await lease.dispose();
+    } finally { f.dom.window.close(); f.svc.disposeAll(); }
+  });
+
+  it.each(['close', 'crash', 'navigate', 'abort'] as const)('ends waiting immediately on %s', async kind => {
+    const f = await researchTab(), abort = new AbortController();
+    try {
+      const lease = await f.svc.observeResearchDocument({ tabId: f.tabId, ownerThreadId: 'research-thread', signal: abort.signal });
+      const capture = await lease.capture(100_000);
+      expect(capture.status).toBe('snapshot');
+      const waiting = lease.waitForChange(capture.revision);
+      if (kind === 'close') f.svc.close(f.tabId);
+      if (kind === 'crash') { f.wc.osPid = 0; f.wc.fire('render-process-gone', {}, { reason: 'crashed', exitCode: 1 }); }
+      if (kind === 'navigate') f.wc.fire('did-start-navigation', { url: f.wc.url, isMainFrame: true, isSameDocument: false });
+      if (kind === 'abort') abort.abort();
+      await waiting;
+      expect(await lease.capture(100_000)).toMatchObject({ status: 'invalidated' });
+      await lease.dispose().catch(() => {});
+    } finally { f.dom.window.__kydogResearchDocument?.observer.disconnect(); f.dom.window.close(); f.svc.disposeAll(); }
+  });
+
+  it('retains renderer preconditions and times out an unresponsive setup command', async () => {
+    const f = await researchTab();
+    const args = { tabId: f.tabId, ownerThreadId: 'research-thread', signal: new AbortController().signal };
+    try {
+      const good = await f.svc.observeResearchDocument(args);
+      expect((await good.capture(100_000)).status).toBe('snapshot');
+      await good.dispose();
+      f.wc.osPid = 0;
+      await expect(f.svc.observeResearchDocument(args)).rejects.toMatchObject({ code: 'browser.not_dispatchable' });
+      f.wc.osPid = 4321;
+      vi.useFakeTimers();
+      f.wc.debugger.respond = () => new Promise(() => {});
+      const failed = expect(f.svc.observeResearchDocument(args)).rejects.toMatchObject({ code: 'browser.page_no_result' });
+      await vi.advanceTimersByTimeAsync(PAGE_EVAL_TIMEOUT_MS + 1);
+      await failed;
+    } finally { f.dom.window.close(); f.svc.disposeAll(); }
   });
 });
