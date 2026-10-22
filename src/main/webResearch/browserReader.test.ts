@@ -427,3 +427,42 @@ it('keeps the original read deadline after setup invalidation and allows a fresh
   expect((await f.reader.read({...a,mode:'capture_existing'})).status).toBe('readable');
   await f.reader.dispose();
 });
+
+it('closes an owned receipt when release runs between its receipt reaction and lease installation', async () => {
+  for (const {keepReceipt,expectedLive} of [{keepReceipt:false,expectedLive:false},{keepReceipt:true,expectedLive:true}]) {
+    const f = fixture(), a = f.input();
+    const kept = await f.reader.openForUser(a);
+    expect(f.reader.currentTab(a)).toBe(kept.tabId);
+    expect(f.tabs.get(kept.tabId)!.owner).toBe('thread-a');
+    f.browser.keep(kept.tabId);
+    await f.reader.release(a,{closeOwned:true});
+    expect(f.tabs.has(kept.tabId)).toBe(true);
+    const open = f.browser.open.getMockImplementation()!, receipt = deferred<Awaited<ReturnType<typeof open>>>();
+    let nativeReceipt: Awaited<ReturnType<typeof open>> | undefined;
+    // Return this exact Promise so the extra reaction is ordered after the
+    // reader's receipt reactions, but before its awaited continuation.
+    f.browser.open.mockImplementationOnce(args=>{
+      void open(args).then(value=>{nativeReceipt=value;});
+      return receipt.promise;
+    });
+    const pending = f.reader.openForUser(a).then(value=>({value}),error=>({error}));
+    await flush();
+    expect(f.tabs.has(nativeReceipt!.tabId)).toBe(true);
+    expect(f.tabs.get(nativeReceipt!.tabId)!.owner).toBe('thread-a');
+    const replacement = receipt.promise.then(async()=>{
+      if (keepReceipt) f.browser.keep(nativeReceipt!.tabId);
+      await f.reader.release(a,{closeOwned:true});
+      return f.reader.openForUser(a);
+    });
+    receipt.resolve(nativeReceipt!);
+    expect(await pending).toMatchObject({error:expect.objectContaining({message:'browser_lease_released'})});
+    const fresh = await replacement;
+    expect(f.tabs.has(nativeReceipt!.tabId)).toBe(expectedLive);
+    expect(f.tabs.has(kept.tabId)).toBe(true);
+    expect(f.tabs.get(kept.tabId)!.owner).toBeNull();
+    expect(f.tabs.has(fresh.tabId)).toBe(true);
+    expect(f.reader.currentTab(a)).toBe(fresh.tabId);
+    expect(f.browser.activate).toHaveBeenCalledTimes(2);
+    await f.reader.dispose();
+  }
+});

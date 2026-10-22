@@ -90,11 +90,15 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
     if (previous && !canReuse && browser.researchOwnsTab(previous.tabId, input.threadId)) browser.keep(previous.tabId);
     const opening = browser.open({ url: input.requestedUrl, ...(canReuse ? { tabId: previous.tabId } : {}), ownerThreadId: input.threadId, activate: false, signal });
     // BrowserService aborts navigation, but still returns its synchronously created
-    // tab. Retain the association even if the deadline wins before that receipt.
-    void opening.then(opened => {
+    // tab. Clean a cancelled receipt if it never acquired a current association.
+    const closeCancelledReceipt = (opened: { tabId: string }) => {
       if (signal.aborted && leases.get(keyOf(input))?.tabId !== opened.tabId && browser.researchOwnsTab(opened.tabId, input.threadId)) browser.close(opened.tabId);
-    }, () => {});
+    };
+    void opening.then(closeCancelledReceipt, () => {});
     const opened = await interrupted(opening, signal);
+    // Release can run after the receipt reaction but before this continuation.
+    // Apply the same ownership/current-association guard before rejecting it.
+    closeCancelledReceipt(opened);
     checkSignal(signal);
     const lease: SourceLease = { key: { threadId: input.threadId, researchRunId: input.researchRunId, sourceId: input.sourceId }, leaseId: randomUUID(), attemptId: input.attemptId ?? null, tabId: opened.tabId, requestedUrl: canonical(input.requestedUrl), urls: new Set(browser.researchNavigationUrls(opened.tabId, opened.nav.navigationId).map(canonical)) };
     lease.urls.add(lease.requestedUrl);
