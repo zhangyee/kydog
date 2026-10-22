@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { isOutstandingSource } from './taskState';
 import type { WebResearchTaskRecord, WebResearchTaskSource } from '../../shared/webResearchTask';
 
 export type ReportValidationError = {
@@ -112,7 +113,8 @@ export function validateReportCitations(sources: readonly WebResearchTaskSource[
     evidencePublicationState(source, evidence).publishable)) {
     errors.push({ code: 'no_evidence_citations', ...location(markdown, 0) });
   }
-  if (unprocessedReason && !markdown.includes(unprocessedReason)) {
+  if ((sources.some(source => isOutstandingSource(source.status)) && !unprocessedReason?.trim()) ||
+    unprocessedReason && !markdown.includes(unprocessedReason)) {
     errors.push({ code: 'unprocessed_reason_missing', ...location(markdown, 0) });
   }
   if (errors.length) return { ok: false, errors };
@@ -124,10 +126,11 @@ export function validateReportCitations(sources: readonly WebResearchTaskSource[
 }
 
 export async function completeReport(task: WebResearchTaskRecord, sources: readonly WebResearchTaskSource[],
-  reportMarkdown: string, fileName?: string, unprocessedReason?: string):
+  reportMarkdown: string, fileName?: string, unprocessedReason?: string, assertCurrent: () => void = () => {}):
 Promise<{ completed: true; reportPath: string } | { completed: false; validationErrors: ReportValidationError[] }> {
   const validation = validateReportCitations(sources, reportMarkdown, unprocessedReason);
   if (!validation.ok) return { completed: false, validationErrors: validation.errors };
+  assertCurrent();
   const root = path.resolve(task.projectRoot);
   const slug = reportSlug(fileName === undefined ? task.originalQuestion : requestedReportTopic(fileName));
   const base = `web-research-${slug}-${new Date().toISOString().slice(0, 10)}`;
@@ -135,9 +138,11 @@ Promise<{ completed: true; reportPath: string } | { completed: false; validation
   await fs.writeFile(temp, validation.publishedMarkdown, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   try {
     for (let suffix = 0; suffix < 1000; suffix++) {
+      assertCurrent();
       const finalPath = path.join(root, `${base}${suffix ? `-${suffix + 1}` : ''}.md`);
       try {
         await fs.link(temp, finalPath);
+        try { assertCurrent(); } catch (error) { await fs.rm(finalPath, { force: true }); throw error; }
         return { completed: true, reportPath: finalPath };
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;

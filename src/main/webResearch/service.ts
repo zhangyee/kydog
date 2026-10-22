@@ -79,3 +79,12 @@ export function getWebResearchService(): ResearchRunService {
   });
   return service;
 }
+
+/** Lifecycle callers must not instantiate a research queue merely to tear it down. */
+export function disposeWebResearchThread(threadId: string): Promise<void> {
+  return taskService?.disposeThread(threadId) ?? Promise.resolve();
+}
+
+export function shutdownWebResearch(): Promise<void> {
+  return taskService?.shutdown() ?? Promise.resolve();
+}

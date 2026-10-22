@@ -307,8 +307,10 @@ describe('durable browser task scheduling', () => {
     await h.service.control(h.task.threadId, h.task.researchRunId, 'pause');
     await h.service.control(h.task.threadId, h.task.researchRunId, 'resume');
     release(); const saved = await running;
-    expect(saved.status).toBe('waiting_user');
-    expect(saved.browser!.attempts.at(-1)!.phase).toBe('interrupted');
+    expect(saved.status).toBe('completed');
+    expect(saved.browser!.attempts.map(attempt => attempt.phase)).toEqual(['interrupted', 'readable']);
+    expect(saved.retrieval?.attemptId).toBe(saved.browser!.attempts[1].attemptId);
+    expect(saved.browser!.attempts[0].attemptId).not.toBe(saved.browser!.attempts[1].attemptId);
   });
 
   it('pauses on a rejected body write and keeps the old evidence available in memory and on disk', async () => {

@@ -1,3 +1,5 @@
+import { disposeWebResearchThread } from '../webResearch/service';
+vi.mock('../webResearch/service', () => ({ disposeWebResearchThread: vi.fn(async () => {}) }));
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import os from 'node:os';
@@ -218,6 +220,8 @@ describe('threadService.delete 关掉这个对话的浏览器标签', () => {
     await threadService.delete({ threadIds: [a.id] });
     expect(vi.mocked(browserService.disposeForThread).mock.calls).toEqual([[a.id]]);
     expect(researchRunStore.removeRunsForThread).toHaveBeenCalledWith(a.id);
+    expect(disposeWebResearchThread).toHaveBeenCalledWith(a.id);
+    expect(vi.mocked(disposeWebResearchThread).mock.invocationCallOrder.at(-1)).toBeLessThan(vi.mocked(researchRunStore.removeRunsForThread).mock.invocationCallOrder.at(-1)!);
   });
 });
 
@@ -323,5 +327,61 @@ describe('threadService.archive / unarchive / delete（批量）', () => {
     expect(vi.mocked(browserService.disposeForThread).mock.calls).toEqual([['a'], ['b']]);
     // 研究任务目录与它同一处置：只删点名的两条，且每条一次。
     expect(vi.mocked(xResearchTaskStore.removeThread).mock.calls).toEqual([['a'], ['b']]);
+  });
+});
+
+describe('web research lifecycle through real thread/project teardown', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-thread-web-'));
+    vi.spyOn(paths, 'ROOT', 'get').mockReturnValue(dir);
+    vi.spyOn(paths, 'INDEX_FILE', 'get').mockReturnValue(path.join(dir, 'index.json'));
+    vi.spyOn(paths, 'sessionFileFor').mockImplementation((_project, threadId) => path.join(dir, `${threadId}.jsonl`));
+    await saveIndex({ schemaVersion: 1, projects: [{ path: '/web', addedAt: 'now' }], threads: [] });
+  });
+  afterEach(() => { vi.mocked(disposeWebResearchThread).mockReset(); vi.mocked(researchRunStore.removeRunsForThread).mockReset();
+    vi.restoreAllMocks(); rmSync(dir, { recursive: true, force: true }); });
+
+  it.each(['delete', 'close'] as const)('%s drains a real model callback before removing ownership or directories', async action => {
+    const { WebResearchTaskService } = await import('../webResearch/taskService');
+    const { TaskStore } = await import('../webResearch/taskStore');
+    const { DEFAULT_WEB_RESEARCH_TASK_BUDGET } = await import('../../shared/webResearchTask');
+    const { randomUUID } = await import('node:crypto');
+    const { promises: fs } = await import('node:fs');
+    const thread = await threadService.create({ projectPath: '/web' });
+    const store = new TaskStore(dir), run = randomUUID(), sourceId = randomUUID();
+    const task = { threadId: thread.id, researchRunId: run, createdByRunId: randomUUID(), projectRoot: dir,
+      originalQuestion: 'question', createdAt: 'now', updatedAt: 'now', revision: 1, status: 'running' as const,
+      angles: [], attempts: [], observationIds: [], discoveryCount: 0, budget: { ...DEFAULT_WEB_RESEARCH_TASK_BUDGET },
+      usage: { candidates: 1, fetchesDispatched: 0, receivedBytes: 0, modelCalls: 0 } };
+    await store.createTask(task);
+    await store.saveSource(task, { sourceId, requestedUrl: 'https://example.org/page', finalUrl: 'https://example.org/page',
+      status: 'queued', reason: 'interrupted', pendingReanalysis: true, contentHash: 'existing-body',
+      createdAt: 'now', updatedAt: 'now', discoveries: [], passages: [{ sourceId, passageId: 'p', ordinal: 1, text: 'Existing evidence.' }] });
+    let started!: () => void, finish!: () => void;
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const service = new WebResearchTaskService({ store, fetch: async () => { throw new Error('unexpected fetch'); },
+      parse: async () => { throw new Error('unexpected parse'); }, resolveModel: async () => ({ providerId: 'fixture', modelId: 'fixture', runtimeRevision: 1 }),
+      adapter: { currentRevision: () => 1, complete: async () => ({ text: '', stopReason: 'stop' }) },
+      extract: async ({ sourceId }) => { started(); await gate; return { sourceId, status: 'irrelevant', examinedPassageIds: ['p'], claims: [], evidence: [], gaps: [] }; },
+      onUpdate: () => {} });
+    const work = service.whenIdle(thread.id, run); await entered;
+    expect((await store.loadSource(task, sourceId)).status).toBe('extracting');
+    vi.mocked(disposeWebResearchThread).mockImplementation(id => service.disposeThread(id));
+    vi.mocked(researchRunStore.removeRunsForThread).mockImplementation(async id => {
+      expect((await store.loadSource(task, sourceId)).status).toBe('cancelled');
+      await fs.rm(path.join(dir, id), { recursive: true, force: true });
+    });
+    const directory = path.join(dir, thread.id); expect(existsSync(directory)).toBe(true);
+    const deleting = action === 'delete' ? threadService.delete({ threadIds: [thread.id] })
+      : (await import('../project/projectService')).projectService.close({ projectPath: '/web' });
+    await vi.waitFor(() => expect(disposeWebResearchThread).toHaveBeenCalledWith(thread.id));
+    expect(existsSync(directory)).toBe(true);
+    finish(); await deleting; await work;
+    expect((await loadIndex()).threads).toEqual([]);
+    if (action === 'delete') expect(existsSync(directory)).toBe(false);
+    else expect((await store.loadSource(task, sourceId)).status).toBe('cancelled');
+    await expect(service.get(thread.id, run)).rejects.toThrow('disposed');
   });
 });

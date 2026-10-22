@@ -14,9 +14,9 @@ import { TaskStore } from './taskStore';
 import { completeReport, evidencePublicationState, validateReportCitations,
   type ReportValidationError } from './report';
 import { resolveSourceUrls } from './sourceUrl';
-import { browserTrigger, buildTaskSnapshot as snapshot } from './taskState';
+import { browserTrigger, isOutstandingSource, buildTaskSnapshot as snapshot } from './taskState';
 import { BrowserDomBudget } from './browserDomBudget';
-import type { BrowserReader, BrowserLeaseUnavailable, ResearchDocumentFacts } from './browserReadTypes';
+import type { BrowserReader, BrowserSourceKey, BrowserLeaseUnavailable, ResearchDocumentFacts } from './browserReadTypes';
 import type { BrowserTrigger, BrowserReadAttempt } from '../../shared/webResearchTask';
 
 export type TaskSubmitInput = {
@@ -54,10 +54,11 @@ export type TaskDeps = {
 
 type Runtime = { task: WebResearchTaskRecord; sources: Map<string, WebResearchTaskSource>;
   meter: ResearchBudgetMeter; permits: ModelPermitPool; controller: AbortController;
-  work?: Promise<void>; pending: boolean; finalizing?: boolean;
+  work?: Promise<void>; pending: boolean; finalizing?: boolean; revoked?: boolean;
+  controlWork?: Promise<unknown>; finalizationWork?: Promise<TaskCompleteResult>; openWork: Set<Promise<unknown>>; openIntents: Map<string, AbortController>;
   persistenceFailures: Set<unknown>; idleError?: unknown;
   domBudget: BrowserDomBudget; budgetTail: Promise<void>; sourceTails: Map<string, Promise<void>>;
-  browserWork: Map<string, Promise<void>>; browserLeases: Map<string, { attemptId: string; leaseId: string }>; };
+  browserWork: Map<string, Promise<void>>; browserControllers: Map<string, AbortController>; browserLeases: Map<string, { attemptId: string | null; leaseId: string }>; };
 
 const SITE_ICON_CACHE_LIMIT = 64;
 const SITE_ICON_TIMEOUT_MS = 5_000;
@@ -99,8 +100,14 @@ export class WebResearchTaskService {
   private readonly loading = new Map<string, Promise<Runtime>>();
   private readonly iconCache = new Map<string, string>();
   private readonly iconInflight = new Map<string, Promise<string | undefined>>();
+  private stopped = false;
+  private readonly disposedThreads = new Set<string>();
+  private shutdownWork?: Promise<void>;
+  private readonly submitting = new Map<string, Set<Promise<TaskSubmitResult>>>();
+  private readonly disposing = new Map<string, Promise<void>>();
+  private readonly offLease?: () => void;
   constructor(private readonly deps: TaskDeps) {
-    deps.browserReader?.onLeaseUnavailable?.((event) => {
+    this.offLease = deps.browserReader?.onLeaseUnavailable?.((event) => {
       const runtime = this.active.get(this.key(event.threadId, event.researchRunId));
       if (runtime) void this.leaseUnavailable(runtime, event).catch((error: unknown) => { runtime.idleError = error; });
     });
@@ -124,7 +131,7 @@ export class WebResearchTaskService {
   private currentAttempt(runtime: Runtime, sourceId: string, attemptId: string): BrowserReadAttempt | undefined {
     const source = this.source(runtime, sourceId);
     const attempt = source?.browser?.attempts.at(-1);
-    return runtime.task.status === 'running' && !runtime.finalizing && !runtime.controller.signal.aborted &&
+    return runtime.task.status === 'running' && !runtime.revoked && !runtime.finalizing && !runtime.controller.signal.aborted &&
       (source?.status === 'browser_queued' || source?.status === 'browser_reading') &&
       attempt?.attemptId === attemptId ? attempt : undefined;
   }
@@ -134,16 +141,18 @@ export class WebResearchTaskService {
       const source = this.source(runtime, event.sourceId);
       const attempt = source?.browser?.attempts.at(-1);
       if (!lease || lease.leaseId !== event.leaseId || lease.attemptId !== event.attemptId ||
-        attempt?.attemptId !== event.attemptId || !source || runtime.task.status !== 'running' ||
+        (attempt?.attemptId ?? null) !== event.attemptId || !source || runtime.revoked ||
+        !['running', 'paused'].includes(runtime.task.status) ||
         !['browser_reading', 'waiting_user'].includes(source.status)) return;
       source.status = 'waiting_user'; source.reason = event.reason;
-      attempt.phase = 'waiting_user'; attempt.reason = event.reason; attempt.finishedAt = new Date().toISOString();
+      if (attempt) { attempt.phase = 'waiting_user'; attempt.reason = event.reason; attempt.finishedAt = new Date().toISOString(); }
       try { await this.saveSource(runtime, source); }
       catch (error) { await this.storageInterrupted(runtime, source, error); }
     });
   }
   private key(threadId: string, researchRunId: string): string { return `${threadId}/${researchRunId}`; }
   private async runtime(threadId: string, researchRunId: string): Promise<Runtime> {
+    this.assertAvailable(threadId);
     const key = this.key(threadId, researchRunId);
     const existing = this.active.get(key);
     if (existing) return existing;
@@ -157,6 +166,8 @@ export class WebResearchTaskService {
   private async loadRuntime(threadId: string, researchRunId: string, key: string): Promise<Runtime> {
     const task = await this.deps.store.loadTask(threadId, researchRunId);
     const all = await this.deps.store.listSources(task);
+    this.assertAvailable(threadId);
+    const closed = task.status === 'completed' || task.status === 'cancelled';
     const meter = new ResearchBudgetMeter(task.budget);
     const savedBytes = all.reduce((sum, source) => sum + (source.receivedBytes ?? 0), 0);
     const dispatchedSources = all.filter((source) => source.status === 'fetching' ||
@@ -167,7 +178,7 @@ export class WebResearchTaskService {
     meter.restore(repairedUsage, all.map((source) => source.requestedUrl),
       all.filter((source) => source.receivedBytes !== undefined)
         .map((source) => [source.sourceId, source.receivedBytes!] as const));
-    if (Object.entries(repairedUsage).some(([name, value]) =>
+    if (!closed && Object.entries(repairedUsage).some(([name, value]) =>
       value !== task.usage[name as keyof typeof repairedUsage])) {
       task.usage = repairedUsage;
       task.revision++;
@@ -177,13 +188,14 @@ export class WebResearchTaskService {
     const sourceDom = new Map(all.map((source) => [source.sourceId, source.browserDomBytes ?? 0]));
     const domBudget = new BrowserDomBudget(task.budget, task.browserDomBytes ?? 0, sourceDom);
     const recoveredDom = Math.max(task.browserDomBytes ?? 0, [...sourceDom.values()].reduce((sum, bytes) => sum + bytes, 0));
-    if (recoveredDom !== (task.browserDomBytes ?? 0)) {
+    if (!closed && recoveredDom !== (task.browserDomBytes ?? 0)) {
       task.browserDomBytes = recoveredDom; await this.deps.store.saveTask(task);
     }
     const runtime: Runtime = { task, sources: new Map(all.map((source) => [candidateKey(source.requestedUrl), source])),
       meter, permits: new ModelPermitPool(task.budget.modelConcurrency), controller: new AbortController(),
       pending: false, persistenceFailures: new Set(), domBudget, budgetTail: Promise.resolve(), sourceTails: new Map(),
-      browserWork: new Map(), browserLeases: new Map() };
+      browserWork: new Map(), browserControllers: new Map(), browserLeases: new Map(), openWork: new Set(), openIntents: new Map() };
+    this.assertAvailable(threadId);
     this.active.set(key, runtime);
     if (task.status === 'running' || task.status === 'paused') {
       for (const source of all) {
@@ -238,7 +250,17 @@ export class WebResearchTaskService {
     await this.changed(runtime);
   }
 
-  async submit(input: TaskSubmitInput, owner: TaskOwner): Promise<TaskSubmitResult> {
+  submit(input: TaskSubmitInput, owner: TaskOwner): Promise<TaskSubmitResult> {
+    const work = this.submitInternal(input, owner);
+    const pending = this.submitting.get(owner.threadId) ?? new Set<Promise<TaskSubmitResult>>();
+    pending.add(work); this.submitting.set(owner.threadId, pending);
+    return work.finally(() => {
+      pending.delete(work); if (!pending.size) this.submitting.delete(owner.threadId);
+    });
+  }
+
+  private async submitInternal(input: TaskSubmitInput, owner: TaskOwner): Promise<TaskSubmitResult> {
+    this.assertAvailable(owner.threadId);
     if (!input || typeof input !== 'object') throw new Error('invalid submit');
     if (input.observationIds && (!Array.isArray(input.observationIds) ||
       input.observationIds.some((id) => typeof id !== 'string'))) throw new Error('invalid observationIds');
@@ -305,10 +327,11 @@ export class WebResearchTaskService {
         usage: { candidates: 0, fetchesDispatched: 0,
           receivedBytes: 0, modelCalls: 0 } };
       await this.deps.store.createTask(task);
+      this.assertAvailable(owner.threadId);
       runtime = { task, sources: new Map(), meter: new ResearchBudgetMeter(budget),
         permits: new ModelPermitPool(budget.modelConcurrency), controller: new AbortController(),
         pending: false, persistenceFailures: new Set(), domBudget: new BrowserDomBudget(budget, 0, new Map()), budgetTail: Promise.resolve(),
-        sourceTails: new Map(), browserWork: new Map(), browserLeases: new Map() };
+        sourceTails: new Map(), browserWork: new Map(), browserControllers: new Map(), browserLeases: new Map(), openWork: new Set(), openIntents: new Map() };
       this.active.set(this.key(owner.threadId, task.researchRunId), runtime);
       created = true;
     }
@@ -451,7 +474,9 @@ export class WebResearchTaskService {
         .filter((id) => id !== observation.observationId);
       if (deferred) task.deferredObservationIds.push(observation.observationId);
     }
+    this.assertAvailable(owner.threadId);
     await Promise.all([...touched].map((source) => this.deps.store.saveSource(task, source)));
+    this.assertAvailable(owner.threadId);
     const current = await this.changed(runtime);
     this.kick(runtime);
     return { researchRunId: task.researchRunId, created, accepted, duplicates, unresolved, rejected,
@@ -459,7 +484,7 @@ export class WebResearchTaskService {
   }
 
   private kick(runtime: Runtime): void {
-    if (runtime.task.status !== 'running') return;
+    if (runtime.revoked || runtime.finalizing || runtime.task.status !== 'running') return;
     this.kickBrowser(runtime);
     if (runtime.work) { runtime.pending = true; return; }
     const tasks = sorted(runtime.sources.values()).filter((source) => source.status === 'queued' ||
@@ -475,6 +500,7 @@ export class WebResearchTaskService {
     };
     runtime.work = Promise.all(Array.from({ length: count }, worker)).then(() => undefined)
       .catch(async (error: unknown) => {
+        if (runtime.revoked || runtime.controller.signal.aborted) return;
         if (runtime.persistenceFailures.has(error)) { runtime.idleError = error; return; }
         runtime.task.status = 'failed';
         runtime.task.statusReason = error instanceof Error ? error.message : String(error);
@@ -509,16 +535,17 @@ export class WebResearchTaskService {
   }
 
   private kickBrowser(runtime: Runtime): void {
-    if (runtime.task.status !== 'running' || runtime.controller.signal.aborted) return;
+    if (runtime.revoked || runtime.finalizing || runtime.task.status !== 'running' || runtime.controller.signal.aborted) return;
     for (const source of sorted(runtime.sources.values())) {
       if (source.status !== 'browser_queued' || runtime.browserWork.has(source.sourceId)) continue;
       const attempt = source.browser?.attempts.at(-1);
       if (!attempt || attempt.phase !== 'queued') continue;
       const work = this.processBrowser(runtime, source, attempt.attemptId).catch(async (error: unknown) => {
+        if (runtime.revoked || runtime.controller.signal.aborted) return;
         if (runtime.persistenceFailures.has(error)) { runtime.idleError = error; return; }
         runtime.task.status = 'failed'; runtime.task.statusReason = error instanceof Error ? error.message : String(error);
         await this.changed(runtime);
-      }).finally(() => { runtime.browserWork.delete(source.sourceId); });
+      }).finally(() => { runtime.browserWork.delete(source.sourceId); this.kickBrowser(runtime); });
       runtime.browserWork.set(source.sourceId, work);
     }
   }
@@ -544,6 +571,7 @@ export class WebResearchTaskService {
             finalUrl: facts.url, mainStatusCode: facts.mainStatusCode, documentContentType: facts.documentContentType, document: facts }) } };
       // Publish the detached replacement only once the atomic source write succeeded.
       await this.persistSource(runtime, replacement);
+      if (!this.currentAttempt(runtime, sourceId, attemptId)) return false;
       Object.assign(source, replacement);
       await this.changed(runtime);
       return true;
@@ -551,7 +579,9 @@ export class WebResearchTaskService {
   }
 
   private async processBrowser(runtime: Runtime, source: WebResearchTaskSource, attemptId: string): Promise<void> {
-    const signal = runtime.controller.signal;
+    const operation = new AbortController();
+    runtime.browserControllers.set(source.sourceId, operation);
+    const signal = AbortSignal.any([runtime.controller.signal, operation.signal]);
     let candidate: { body: BodyResult; facts: ResearchDocumentFacts } | undefined;
     try {
       const attempt = source.browser!.attempts.at(-1)!;
@@ -617,7 +647,7 @@ export class WebResearchTaskService {
           runtime.browserLeases.delete(source.sourceId);
           await this.deps.browserReader?.release({ threadId: runtime.task.threadId,
             researchRunId: runtime.task.researchRunId, sourceId: source.sourceId }, { closeOwned: true });
-          await this.extractAcceptedBody(runtime, source);
+          await this.extractAcceptedBody(runtime, source, signal);
         }
         return;
       }
@@ -637,6 +667,7 @@ export class WebResearchTaskService {
       });
     } catch (error) {
       await this.sourceSerial(runtime, source.sourceId, async () => {
+        if (signal.aborted || runtime.revoked) return;
         const current = source.browser?.attempts.at(-1);
         if (runtime.persistenceFailures.has(error)) { await this.storageInterrupted(runtime, source, error); return; }
         if (current?.attemptId !== attemptId) return;
@@ -657,6 +688,8 @@ export class WebResearchTaskService {
         if (budget) { runtime.task.status = 'paused'; runtime.task.statusReason = reason; }
         await this.saveSource(runtime, source);
       });
+    } finally {
+      if (runtime.browserControllers.get(source.sourceId) === operation) runtime.browserControllers.delete(source.sourceId);
     }
   }
 
@@ -671,20 +704,24 @@ export class WebResearchTaskService {
       if (!source.contentHash || !source.passages.length ||
         (!source.pendingReanalysis && source.reason !== 'interrupted')) {
         const reserved = await this.taskSerial(runtime, async () => {
+          if (signal.aborted || runtime.revoked) throw new Error('research_interrupted');
           const reservation = meter.reserveFetch(source.sourceId);
           if (!reservation.ok) { task.status = 'paused'; task.statusReason = reservation.reason; }
           await this.persistTask(runtime); return reservation;
         });
         if (!reserved.ok) return;
         await this.sourceSerial(runtime, source.sourceId, async () => {
+          if (signal.aborted || runtime.revoked) return;
           source.status = 'fetching'; source.reason = undefined; await this.saveSource(runtime, source);
         });
+        if (signal.aborted || runtime.revoked) return;
         const resolvedUrls = resolveSourceUrls(source.requestedUrl);
         source.contentUrl = resolvedUrls.contentUrl;
         const fetched = await this.deps.fetch({ url: resolvedUrls.contentUrl, sourceId: source.sourceId,
           budget: meter, signal, preReserved: true });
         const trigger = browserTrigger({ source, fetch: fetched });
         await this.sourceSerial(runtime, source.sourceId, async () => {
+          if (signal.aborted || runtime.revoked) return;
           source.contentFinalUrl = fetched.finalUrl;
           source.finalUrl = resolvedUrls.contentUrl === resolvedUrls.reportUrl ? fetched.finalUrl : resolvedUrls.reportUrl;
           source.redirectChain = fetched.redirectChain; source.contentType = fetched.contentType;
@@ -702,9 +739,11 @@ export class WebResearchTaskService {
         if (fetched.status !== 'readable' || !fetched.finalUrl) return;
         const body = await this.deps.parse({ bytes: fetched.bytes, contentType: fetched.contentType,
           finalUrl: fetched.finalUrl, sourceId: source.sourceId });
+        if (signal.aborted || runtime.revoked) return;
         const bodyTrigger = browserTrigger({ source, body });
         if (bodyTrigger) { await this.queueBrowser(runtime, source, bodyTrigger); return; }
         await this.sourceSerial(runtime, source.sourceId, async () => {
+          if (signal.aborted || runtime.revoked) return;
           source.passages = body.passages; source.contentHash = body.contentHash; source.completeness = body.completeness;
           source.siteIconUrl = body.siteIconUrl; source.retrieval = { method: 'http' };
           if (body.status !== 'readable' || !body.passages.length || !body.contentHash) {
@@ -714,9 +753,10 @@ export class WebResearchTaskService {
         });
         if (body.status !== 'readable' || !body.passages.length || !body.contentHash) return;
       }
-      await this.extractAcceptedBody(runtime, source);
+      await this.extractAcceptedBody(runtime, source, signal);
     } catch (error) {
       await this.sourceSerial(runtime, source.sourceId, async () => {
+        if (signal.aborted || runtime.revoked) return;
         if (runtime.persistenceFailures.has(error)) { await this.storageInterrupted(runtime, source, error); return; }
         source.status = signal.aborted ? 'queued' : 'failed';
         source.reason = signal.aborted ? 'interrupted' : error instanceof Error ? error.message : 'source_error';
@@ -725,12 +765,15 @@ export class WebResearchTaskService {
     }
   }
 
-  private async extractAcceptedBody(runtime: Runtime, source: WebResearchTaskSource): Promise<void> {
-    const { task, meter } = runtime, signal = runtime.controller.signal;
+  private async extractAcceptedBody(runtime: Runtime, source: WebResearchTaskSource, signal: AbortSignal): Promise<void> {
+    const { task, meter } = runtime;
     if (signal.aborted) return;
     const hash = source.contentHash, retrievalAttempt = source.retrieval?.attemptId, status = source.status;
     const model = task.modelSnapshot ?? await this.deps.resolveModel(task.threadId);
-    await this.taskSerial(runtime, async () => { task.modelSnapshot ??= model; await this.persistTask(runtime); });
+    await this.taskSerial(runtime, async () => {
+      if (signal.aborted || runtime.revoked) return;
+      task.modelSnapshot ??= model; await this.persistTask(runtime);
+    });
     const admitted = await this.sourceSerial(runtime, source.sourceId, async () => {
       if (source.contentHash !== hash || source.retrieval?.attemptId !== retrievalAttempt || source.status !== status) return false;
       if (task.status === 'paused' && !signal.aborted) {
@@ -759,6 +802,7 @@ export class WebResearchTaskService {
     if (persistenceFailure) throw persistenceFailure.error;
     let trigger: BrowserTrigger | undefined;
     await this.sourceSerial(runtime, source.sourceId, async () => {
+      if (signal.aborted || runtime.revoked) return;
       if (source.contentHash !== hash || source.retrieval?.attemptId !== retrievalAttempt || source.status !== 'extracting') return;
       if (signal.aborted) { source.status = 'queued'; source.pendingReanalysis = true; }
       else if (extraction.reason === 'model_call_limit') {
@@ -775,9 +819,7 @@ export class WebResearchTaskService {
 
   async whenIdle(threadId: string, researchRunId: string): Promise<void> {
     const runtime = await this.runtime(threadId, researchRunId);
-    while (runtime.work || runtime.browserWork.size || runtime.sourceTails.size) {
-      await Promise.all([runtime.work, ...runtime.browserWork.values(), ...runtime.sourceTails.values()]);
-    }
+    await this.drain(runtime);
     if (runtime.idleError !== undefined) throw runtime.idleError;
   }
 
@@ -896,37 +938,217 @@ export class WebResearchTaskService {
       nextCursor: offset + size < items.length ? String(offset + size) : undefined };
   }
 
+  private assertAvailable(threadId: string): void {
+    if (this.stopped || this.disposedThreads.has(threadId)) throw new Error('research service disposed');
+  }
+  private assertMutable(runtime: Runtime): void {
+    this.assertAvailable(runtime.task.threadId);
+    if (runtime.finalizing) throw new Error('task is completing');
+    if (runtime.task.status === 'completed' || runtime.task.status === 'cancelled') throw new Error('task is closed');
+  }
+  private sourceKey(runtime: Runtime, sourceId: string): BrowserSourceKey {
+    return { threadId: runtime.task.threadId, researchRunId: runtime.task.researchRunId, sourceId };
+  }
+  private async drain(runtime: Runtime): Promise<void> {
+    while (runtime.work || runtime.browserWork.size || runtime.sourceTails.size || runtime.openWork.size) {
+      await Promise.allSettled([runtime.work, ...runtime.browserWork.values(),
+        ...runtime.sourceTails.values(), ...runtime.openWork]);
+    }
+    await runtime.budgetTail;
+  }
+  private abort(runtime: Runtime): void {
+    runtime.controller.abort(new Error('research_interrupted'));
+    for (const controller of runtime.openIntents.values()) controller.abort(new Error('attempt_superseded'));
+    runtime.openIntents.clear();
+  }
+  private async releaseSources(runtime: Runtime): Promise<void> {
+    await Promise.all([...runtime.sources.values()].map(source =>
+      this.deps.browserReader?.release(this.sourceKey(runtime, source.sourceId), { closeOwned: true })));
+    runtime.browserLeases.clear();
+  }
+  private async settleInterrupted(runtime: Runtime, cancelled: boolean): Promise<void> {
+    for (const source of runtime.sources.values()) {
+      await this.sourceSerial(runtime, source.sourceId, async () => {
+        if (!isOutstandingSource(source.status)) return;
+        if (cancelled) { source.status = 'cancelled'; source.reason = 'cancelled_by_user'; }
+        else if (source.status === 'browser_reading' || source.status === 'browser_queued') {
+          source.status = 'waiting_user'; source.reason = 'interrupted';
+        } else if (source.status === 'fetching' || source.status === 'extracting') {
+          source.pendingReanalysis = Boolean(source.contentHash && source.passages.length);
+          source.status = 'queued'; source.reason = 'interrupted';
+        } else return;
+        const attempt = source.browser?.attempts.at(-1);
+        if (attempt && (cancelled || source.reason === 'interrupted')) {
+          attempt.phase = cancelled ? 'cancelled' : 'interrupted';
+          attempt.reason = source.reason; attempt.finishedAt = new Date().toISOString();
+        }
+        await this.persistSource(runtime, source);
+      });
+    }
+  }
+  /** Caller owns sourceSerial. A fresh intent never refunds navigation or DOM use. */
+  private async explicitAttempt(runtime: Runtime, source: WebResearchTaskSource, initiatedBy: 'user' | 'resume'): Promise<void> {
+    const trigger = source.browser?.trigger ?? browserTrigger({ source, legacyResume: true });
+    if (!trigger) throw new Error('source does not require browser');
+    runtime.openIntents.get(source.sourceId)?.abort(new Error('attempt_superseded'));
+    runtime.openIntents.delete(source.sourceId);
+    runtime.browserControllers.get(source.sourceId)?.abort(new Error('attempt_superseded'));
+    const browser = source.browser ??= { trigger, automaticAttemptUsed: true, attempts: [] };
+    const previous = browser.attempts.at(-1);
+    if (previous && (previous.phase === 'queued' || previous.phase === 'reading')) {
+      previous.phase = 'interrupted'; previous.reason = 'attempt_superseded'; previous.finishedAt = new Date().toISOString();
+    }
+    browser.attempts.push({ attemptId: randomUUID(), sequence: browser.attempts.length + 1,
+      initiatedBy, phase: 'queued', startedAt: new Date().toISOString(),
+      requestedUrl: source.finalUrl ?? source.requestedUrl,
+      navigationMode: this.deps.browserReader?.currentTab(this.sourceKey(runtime, source.sourceId)) ? 'capture_existing' : 'navigate',
+      navigationReserved: false, domBytes: 0 });
+    source.status = 'browser_queued'; source.reason = undefined; source.pendingReanalysis = false;
+    await this.saveSource(runtime, source);
+    runtime.idleError = undefined;
+  }
+
+  async retrySource(input: BrowserSourceKey & { expectedAttemptId: string | null }): Promise<WebResearchTaskSnapshot> {
+    const runtime = await this.runtime(input.threadId, input.researchRunId);
+    await this.sourceSerial(runtime, input.sourceId, async () => {
+      this.assertMutable(runtime);
+      if (runtime.task.status !== 'running') throw new Error('task is paused');
+      const source = this.source(runtime, input.sourceId);
+      if (!source) throw new Error('source not found');
+      if ((source.browser?.attempts.at(-1)?.attemptId ?? null) !== input.expectedAttemptId) return;
+      if (!['waiting_user', 'failed', 'browser_queued', 'browser_reading'].includes(source.status)) throw new Error('source is not retryable');
+      await this.explicitAttempt(runtime, source, 'user');
+    });
+    this.kickBrowser(runtime);
+    return snapshot(runtime.task, runtime.sources.values());
+  }
+
+  async openSource(key: BrowserSourceKey): Promise<{ tabId: string; expectedAttemptId: string | null; snapshot: WebResearchTaskSnapshot }> {
+    const runtime = await this.runtime(key.threadId, key.researchRunId);
+    const controller = new AbortController();
+    const work = (async () => {
+      const intent = await this.sourceSerial(runtime, key.sourceId, async () => {
+        this.assertMutable(runtime);
+        const source = this.source(runtime, key.sourceId);
+        if (!source) throw new Error('source not found');
+        if (!source.browser && !browserTrigger({ source, legacyResume: true })) throw new Error('source does not require browser');
+        runtime.openIntents.get(key.sourceId)?.abort(new Error('attempt_superseded'));
+        runtime.openIntents.set(key.sourceId, controller);
+        return { requestedUrl: source.finalUrl ?? source.requestedUrl, expectedAttemptId: source.browser?.attempts.at(-1)?.attemptId ?? null };
+      });
+      const check = () => {
+        this.assertMutable(runtime);
+        if (controller.signal.aborted || runtime.openIntents.get(key.sourceId) !== controller ||
+          (this.source(runtime, key.sourceId)?.browser?.attempts.at(-1)?.attemptId ?? null) !== intent.expectedAttemptId) throw new Error('attempt_superseded');
+      };
+      if (!this.deps.browserReader) throw new Error('browser_unavailable');
+      const receipt = await this.deps.browserReader.openForUser({ ...key, requestedUrl: intent.requestedUrl,
+        attemptId: intent.expectedAttemptId, signal: controller.signal,
+        beforeNavigate: () => this.sourceSerial(runtime, key.sourceId, () => this.taskSerial(runtime, async () => {
+          check(); const reserved = runtime.meter.reserveFetch();
+          if (!reserved.ok) throw new Error(reserved.reason);
+          await this.persistTask(runtime); check();
+        })) });
+      return this.sourceSerial(runtime, key.sourceId, async () => {
+        check(); runtime.browserLeases.set(key.sourceId, { attemptId: intent.expectedAttemptId, leaseId: receipt.leaseId });
+        return { tabId: receipt.tabId, expectedAttemptId: intent.expectedAttemptId, snapshot: snapshot(runtime.task, runtime.sources.values()) };
+      });
+    })();
+    runtime.openWork.add(work);
+    try { return await work; }
+    finally { runtime.openWork.delete(work); if (runtime.openIntents.get(key.sourceId) === controller) runtime.openIntents.delete(key.sourceId); }
+  }
+
   async control(threadId: string, researchRunId: string, action: 'pause' | 'resume' | 'cancel'):
     Promise<WebResearchTaskSnapshot> {
     const runtime = await this.runtime(threadId, researchRunId);
-    if (runtime.finalizing) throw new Error('task is completing');
-    if (runtime.task.status === 'completed' || runtime.task.status === 'cancelled') throw new Error('task is closed');
-    if (action === 'resume') {
-      runtime.task.status = 'running'; runtime.task.statusReason = undefined;
-      runtime.controller = new AbortController();
-      const value = await this.changed(runtime);
-      this.kick(runtime);
-      return value;
-    }
-    runtime.task.status = action === 'pause' ? 'paused' : 'cancelled';
-    runtime.task.statusReason = action === 'pause' ? 'paused_by_user' : 'cancelled_by_user';
-    runtime.controller.abort();
-    if (action === 'cancel') {
-      if (runtime.work) await runtime.work;
-      for (const source of runtime.sources.values()) {
-        if (source.status === 'queued') { source.status = 'cancelled'; await this.persistSource(runtime, source); }
+    const work = (runtime.controlWork ?? Promise.resolve()).catch(() => {}).then(async () => {
+      this.assertMutable(runtime);
+      if (action === 'resume') {
+        // Each in-flight operation retains its own revoked signal; resume never waits on a page.
+        runtime.task.status = 'running'; runtime.task.statusReason = undefined;
+        if (runtime.controller.signal.aborted) runtime.controller = new AbortController();
+        for (const source of runtime.sources.values()) await this.sourceSerial(runtime, source.sourceId, async () => {
+          const interrupted = source.reason === 'interrupted' && source.status === 'waiting_user';
+          const legacy = !source.browser && source.status === 'failed' && browserTrigger({ source, legacyResume: true });
+          if (source.status === 'browser_queued' || interrupted || legacy) await this.explicitAttempt(runtime, source, 'resume');
+        });
+        const value = await this.changed(runtime); runtime.idleError = undefined;
+        this.kick(runtime); return value;
       }
-    }
-    return this.changed(runtime);
+      runtime.task.status = action === 'pause' ? 'paused' : 'cancelled';
+      runtime.task.statusReason = action === 'pause' ? 'paused_by_user' : 'cancelled_by_user';
+      this.abort(runtime);
+      if (action === 'cancel') { await this.releaseSources(runtime); await this.drain(runtime); }
+      await this.settleInterrupted(runtime, action === 'cancel');
+      return this.changed(runtime);
+    });
+    runtime.controlWork = work;
+    try { return await work; }
+    finally { if (runtime.controlWork === work) runtime.controlWork = undefined; }
+  }
+
+  /** Revoke now; only disposal-owned state writes may run after this point. */
+  disposeThread(threadId: string): Promise<void> {
+    if (this.shutdownWork) return this.shutdownWork;
+    const existing = this.disposing.get(threadId);
+    if (existing) return existing;
+    this.disposedThreads.add(threadId);
+    const runtimes = [...this.active.values()].filter(runtime => runtime.task.threadId === threadId);
+    for (const runtime of runtimes) { runtime.revoked = true; this.abort(runtime); }
+    const work = (async () => {
+      await Promise.allSettled(this.submitting.get(threadId) ?? []);
+      await Promise.allSettled([...this.loading.entries()].filter(([key]) => key.startsWith(`${threadId}/`)).map(([, work]) => work));
+      for (const runtime of runtimes) {
+        await this.releaseSources(runtime); await this.drain(runtime); await runtime.controlWork?.catch(() => {}); await runtime.finalizationWork?.catch(() => {});
+        if (!['completed', 'cancelled'].includes(runtime.task.status)) {
+          runtime.task.status = 'cancelled'; runtime.task.statusReason = 'thread_disposed';
+          await this.settleInterrupted(runtime, true); await this.changed(runtime);
+        }
+        this.active.delete(this.key(threadId, runtime.task.researchRunId));
+      }
+    })();
+    this.disposing.set(threadId, work);
+    return work;
+  }
+
+  shutdown(): Promise<void> {
+    if (this.shutdownWork) return this.shutdownWork;
+    this.stopped = true; this.offLease?.();
+    const runtimes = [...this.active.values()].filter(runtime => !this.disposedThreads.has(runtime.task.threadId));
+    for (const runtime of runtimes) { runtime.revoked = true; this.abort(runtime); }
+    const reader = this.deps.browserReader?.dispose();
+    this.shutdownWork = (async () => {
+      await reader;
+      await Promise.allSettled([...this.submitting.values()].flatMap(pending => [...pending]));
+      await Promise.all(this.disposing.values());
+      await Promise.allSettled(this.loading.values());
+      for (const runtime of runtimes) {
+        await this.drain(runtime); await runtime.controlWork?.catch(() => {}); await runtime.finalizationWork?.catch(() => {});
+        if (['completed', 'cancelled'].includes(runtime.task.status)) continue;
+        runtime.task.status = 'paused'; runtime.task.statusReason = 'interrupted';
+        await this.settleInterrupted(runtime, false); await this.changed(runtime);
+      }
+    })();
+    return this.shutdownWork;
   }
 
   async complete(threadId: string, researchRunId: string, reportMarkdown: string,
     fileName?: string, unprocessedReason?: string): Promise<TaskCompleteResult> {
     const runtime = await this.runtime(threadId, researchRunId);
+    this.assertMutable(runtime);
+    const work = this.completeRuntime(runtime, reportMarkdown, fileName, unprocessedReason);
+    runtime.finalizationWork = work;
+    try { return await work; }
+    finally { if (runtime.finalizationWork === work) runtime.finalizationWork = undefined; }
+  }
+
+  private async completeRuntime(runtime: Runtime, reportMarkdown: string,
+    fileName?: string, unprocessedReason?: string): Promise<TaskCompleteResult> {
     if (runtime.finalizing) throw new Error('task is completing');
     if (runtime.task.status === 'completed' || runtime.task.status === 'cancelled') throw new Error('task is closed');
     const hasOutstanding = sorted(runtime.sources.values()).some((source) =>
-      source.status === 'queued' || source.status === 'fetching' || source.status === 'extracting');
+      isOutstandingSource(source.status));
     if (hasOutstanding && !unprocessedReason?.trim()) throw new Error('unprocessedReason required');
     const beforeFinalizing = sorted(runtime.sources.values());
     const validation = validateReportCitations(beforeFinalizing, reportMarkdown, unprocessedReason);
@@ -938,18 +1160,21 @@ export class WebResearchTaskService {
     try {
       runtime.task.status = 'paused';
       runtime.task.statusReason = 'finalizing_report';
-      runtime.controller.abort();
+      this.abort(runtime);
       await this.changed(runtime);
-      if (runtime.work) await runtime.work;
+      await this.releaseSources(runtime);
+      await this.drain(runtime);
       const sources = sorted(runtime.sources.values());
-      const queued = sources.filter((source) => source.status === 'queued');
+      const queued = sources.filter((source) => isOutstandingSource(source.status));
+      this.assertAvailable(runtime.task.threadId);
       const report = await completeReport(runtime.task, sources, reportMarkdown, fileName,
-        unprocessedReason);
+        unprocessedReason, () => this.assertAvailable(runtime.task.threadId));
       if (!report.completed) {
         runtime.task.status = previousStatus;
         runtime.task.statusReason = previousStatusReason;
         if (previousStatus === 'running') runtime.controller = new AbortController();
         const current = await this.changed(runtime);
+        runtime.finalizing = false;
         if (previousStatus === 'running') this.kick(runtime);
         return { completed: false, validationErrors: report.validationErrors, snapshot: current };
       }
@@ -962,6 +1187,7 @@ export class WebResearchTaskService {
       const current = await this.changed(runtime);
       return { completed: true, reportPath: report.reportPath, snapshot: current };
     } catch (error) {
+      if (runtime.revoked) throw error;
       runtime.task.status = 'paused';
       runtime.task.statusReason = error instanceof Error ? error.message : String(error);
       await this.changed(runtime);

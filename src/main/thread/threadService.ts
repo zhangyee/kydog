@@ -96,6 +96,8 @@ export class ThreadService {
       const deletion = agentService.beginThreadDeletion(threadIds);
       try {
         for (const t of targets) {
+          const { disposeWebResearchThread } = await import('../webResearch/service');
+          await disposeWebResearchThread(t.id);
           await agentService.dispose(t.id);
           // 对话没了，它名下的 agent 标签一起关（标签跟对话走，spec 2026-09-17-browser-tab-lifecycle-design）。
           // **排在 dispose 之后**：先把在飞的那一轮停下，再关它可能正在驱动的标签。

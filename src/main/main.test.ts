@@ -1,3 +1,5 @@
+import { shutdownWebResearch } from './webResearch/service';
+vi.mock('./webResearch/service', () => ({ shutdownWebResearch: vi.fn(async () => {}) }));
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
@@ -259,9 +261,13 @@ describe('main.ts 真的把内置浏览器装配起来了', () => {
 
   it('before-quit 收摊', () => {
     const before = H.browser.disposeAll;
+    let disposedBeforeResearch = -1;
+    vi.mocked(shutdownWebResearch).mockImplementationOnce(async () => { disposedBeforeResearch = H.browser.disposeAll; });
     // 删掉 installBrowserQuitWiring 这一行 → 这里红（before-quit 上就只剩 main.ts
     // 自己那个关文件监听 / 销毁 PDF 渲染窗口的回调）。
-    for (const fn of H.appListeners['before-quit'] ?? []) fn();
+    for (const fn of H.appListeners['before-quit'] ?? []) fn({ preventDefault: vi.fn() });
+    expect(shutdownWebResearch).toHaveBeenCalledTimes(1);
+    expect(disposedBeforeResearch).toBe(before);
     expect(H.browser.disposeAll).toBe(before + 1);
   });
 });

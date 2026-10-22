@@ -1,3 +1,5 @@
+import { disposeWebResearchThread } from '../webResearch/service';
+vi.mock('../webResearch/service', () => ({ disposeWebResearchThread: vi.fn(async () => {}) }));
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync, promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -37,7 +39,9 @@ describe('projectService.close 关掉被带走的对话的标签', () => {
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
   it('只关这个项目的对话的标签，别的项目的不碰', async () => {
+    vi.mocked(disposeWebResearchThread).mockClear();
     await projectService.close({ projectPath: '/p1' });
+    expect(vi.mocked(disposeWebResearchThread).mock.calls.map(c => c[0]).sort()).toEqual(['t1', 't3']);
 
     expect(vi.mocked(browserService.disposeForThread).mock.calls.map((c) => c[0]).sort()).toEqual(['t1', 't3']);
     expect((await loadIndex()).threads.map((t) => t.id)).toEqual(['t2']);

@@ -28,6 +28,8 @@ import { broadcaster } from './ipc/broadcaster';
 import { browserService } from './browser/browserService';
 import { installProxyDispatcher } from './net/systemProxy';
 import { installBrowserWindowWiring, installBrowserQuitWiring } from './browser/mainWiring';
+import { installWebResearchQuitWiring } from './webResearch/mainWiring';
+import { shutdownWebResearch } from './webResearch/service';
 import { decideNavigation } from './navigationGuard';
 import iconDataUrl from '../../assets/icons/icon.png?inline';
 
@@ -222,6 +224,7 @@ app.on('ready', async () => {
 
 // 内置浏览器的标签退出时一并收摊。挂在 before-quit（不是窗口 `closed`）：
 // 那里只清窗口引用，收摊统一在这里做一次，`disposeAll` 本身幂等。
+installWebResearchQuitWiring(app, shutdownWebResearch);
 installBrowserQuitWiring(app, browserService);
 
 app.on('window-all-closed', () => {

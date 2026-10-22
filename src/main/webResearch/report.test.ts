@@ -74,6 +74,18 @@ describe('completeReport', () => {
       '[来源](https://example.org/final)〔证据:ev-1〕')).toMatchObject({ ok: true });
   });
 
+  it.each(['browser_queued', 'browser_reading', 'waiting_user'] as const)(
+    'requires an explicit unprocessed explanation for %s even at the publication boundary', async status => {
+      const { task, source } = await fixture();
+      const markdown = '[来源](https://example.org/final)〔证据:ev-1〕';
+      expect(validateReportCitations([source], markdown).ok).toBe(true);
+      source.status = status;
+      expect(await completeReport(task, [source], markdown)).toMatchObject({ completed: false,
+        validationErrors: [{ code: 'unprocessed_reason_missing' }] });
+      expect(await completeReport(task, [source], markdown + '\nDeferred', undefined, 'Deferred'))
+        .toMatchObject({ completed: true });
+    });
+
   it('writes a unique Markdown file and never overwrites the first report', async () => {
     const { task, source } = await fixture();
     source.extraction!.evidence.push({ ...source.extraction!.evidence[0], evidenceId: 'ev-2' });
