@@ -369,3 +369,58 @@ describe('researchDocument root sanitization', () => {
     expect(captured.html).not.toContain('private-editor-value');
   });
 });
+
+it('preserves explicit verification evidence while still capturing a supported article', () => {
+  const f = fixture('<article><p>Readable evidence</p></article><footer><input name="captcha"></footer>');
+  expect(f.run('capture', { maxBytes: 10000, verificationSelector: 'input[name="captcha"]' })).toMatchObject({ status: 'snapshot', verificationWidget: true });
+  f.document.body.innerHTML = '<input name="captcha">';
+  expect(f.run('capture', { maxBytes: 10000, verificationSelector: 'input[name="captcha"]' })).toMatchObject({ status: 'pending', verificationWidget: true });
+  f.document.body.innerHTML = '<input name="search">';
+  expect(f.run('capture', { maxBytes: 10000, verificationSelector: 'input[name="captcha"]' })).toMatchObject({ status: 'pending', verificationWidget: false });
+});
+
+it('retains actual response status and the shared explicit-widget evidence on pending captures', async () => {
+  const f = bridgeFixture();
+  f.setLocation({mainStatusCode:403});
+  f.document.body.innerHTML = '<article><p>Evidence</p></article><footer><iframe src="https://captcha.example/recaptcha"></iframe></footer>';
+  const lease = await f.open();
+  expect(await lease.capture(10000)).toMatchObject({status:'snapshot',mainStatusCode:403,verificationWidget:true});
+  f.document.querySelector('article')!.remove();
+  expect(await lease.capture(10000)).toMatchObject({status:'pending',mainStatusCode:403,verificationWidget:true,reason:'article_root_missing'});
+  f.document.querySelector('iframe')!.remove();
+  expect(await lease.capture(10000)).toMatchObject({status:'pending',mainStatusCode:403,verificationWidget:false});
+  await lease.dispose();
+});
+
+it.each([false, true])('wakes on an exact widget-presence transition with article root present=%s, ignoring unrelated controls', async rootPresent => {
+  const f = bridgeFixture(), lease = await f.open();
+  const first = await lease.capture(10000);
+  let woke = false;
+  const positive = lease.waitForChange(first.revision).then(()=>{woke=true;});
+  f.document.querySelector('article')!.append('A real body change');
+  await positive; expect(woke).toBe(true);
+  if (rootPresent) f.document.querySelector('article')!.textContent = '';
+  else f.document.querySelector('article')!.remove();
+  const pending = await lease.capture(10000);
+  woke = false;
+  const wait = lease.waitForChange(pending.revision).then(()=>{woke=true;});
+  const sidebar = f.document.createElement('aside'); sidebar.innerHTML = '<input name="search"><p>Sidebar</p>'; f.document.body.append(sidebar);
+  await Promise.resolve(); await Promise.resolve();
+  expect(woke).toBe(false);
+  sidebar.querySelector('input')!.name = 'captcha';
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  expect(woke).toBe(true);
+  await wait;
+  expect(await lease.capture(10000)).toMatchObject({status:rootPresent?'snapshot':'pending',verificationWidget:true});
+  await lease.dispose();
+});
+
+it('keeps supported body text while sanitizing an unrelated comment widget without losing its exact evidence', () => {
+  const f = fixture('<article><p>Readable evidence</p><section class="comments"><div class="g-recaptcha">widget-private-markup</div></section></article>');
+  expect(f.document.documentElement.outerHTML).toContain('widget-private-markup');
+  const result = f.run('capture',{maxBytes:10000,verificationSelector:'.g-recaptcha'});
+  expect(result).toMatchObject({status:'snapshot',verificationWidget:true});
+  expect(result.html).toContain('Readable evidence');
+  expect(result.html).not.toContain('widget-private-markup');
+  expect(f.document.querySelector('.g-recaptcha')?.textContent).toBe('widget-private-markup');
+});

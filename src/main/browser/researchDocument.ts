@@ -1,7 +1,8 @@
+import { VERIFICATION_WIDGET_SELECTOR } from '../webResearch/verificationWidget';
 import { randomUUID } from 'node:crypto';
 import SOURCE from './injected/researchDocument.js?raw';
 import type { ResearchDocumentSnapshot, ResearchDocumentIdentity } from '../webResearch/browserReadTypes';
-export type ResearchDocumentCapture = { revision: number } & (
+export type ResearchDocumentCapture = { revision: number; mainStatusCode?: number; verificationWidget?: boolean } & (
   | { status: 'snapshot'; document: ResearchDocumentSnapshot }
   | { status: 'pending' | 'invalidated'; reason: string }
   | { status: 'oversize'; utf8Bytes: number }
@@ -104,7 +105,7 @@ export async function observeResearchDocument(port: ResearchDocumentPort, signal
     await port.sendCommand('Runtime.addBinding', { name: bindingName, executionContextName: worldName });
     active();
     observed = true;
-    const ready = await evaluate('observe', { bindingName });
+    const ready = await evaluate('observe', { bindingName, verificationSelector: VERIFICATION_WIDGET_SELECTOR });
     if (ready?.status !== 'observing' || ready.url !== initial.currentUrl || !check()) throw new Error('research_document_identity_changed');
     revision = Math.max(revision, ready.revision);
   })();
@@ -116,7 +117,8 @@ export async function observeResearchDocument(port: ResearchDocumentPort, signal
     async capture(maxBytes) {
       if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error('research_document_invalid_budget');
       if (!check()) return { status: 'invalidated', reason: invalidated!, revision };
-      const captured = await evaluate('capture', { maxBytes });
+      const captured = await evaluate('capture', { maxBytes, verificationSelector: VERIFICATION_WIDGET_SELECTOR });
+      const facts = { mainStatusCode: initial.mainStatusCode, verificationWidget: captured.verificationWidget === true };
       if (!check() || captured.url !== undefined && captured.url !== initial.currentUrl) {
         invalidate('document_identity_changed');
         return { status: 'invalidated', reason: invalidated!, revision };
@@ -124,14 +126,14 @@ export async function observeResearchDocument(port: ResearchDocumentPort, signal
       if (!Number.isSafeInteger(captured.revision) || captured.revision < 0) throw new Error('research_document_invalid_revision');
       revision = Math.max(revision, captured.revision); wake();
       if (captured.status === 'snapshot') {
-        return { status: 'snapshot', revision: captured.revision, document: {
+        return { ...facts, status: 'snapshot', revision: captured.revision, document: {
           url: initial.currentUrl, identity: { documentEpoch: initial.documentEpoch, routeRevision: initial.routeRevision, navigationSequence: initial.navigationSequence },
           rootRule: captured.rootRule, html: captured.html, utf8Bytes: captured.utf8Bytes,
           ...(initial.mainStatusCode === undefined ? {} : { mainStatusCode: initial.mainStatusCode }),
         } };
       }
-      if (captured.status === 'oversize') return { status: 'oversize', revision: captured.revision, utf8Bytes: captured.utf8Bytes };
-      if (captured.status === 'pending') return { status: 'pending', revision: captured.revision, reason: captured.reason };
+      if (captured.status === 'oversize') return { ...facts, status: 'oversize', revision: captured.revision, utf8Bytes: captured.utf8Bytes };
+      if (captured.status === 'pending') return { ...facts, status: 'pending', revision: captured.revision, reason: captured.reason };
       invalidate(captured.reason ?? 'document_invalidated');
       return { status: 'invalidated', reason: invalidated!, revision };
     },

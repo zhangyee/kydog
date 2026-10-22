@@ -5423,11 +5423,16 @@ describe('network native teardown ownership', () => {
       await result.networkLease!.close('done');
     }else{
       if(end==='crash')wc.fire('render-process-gone',{}, {reason:'crashed'});
-      else if(end==='detach')wc.debugger.fire('detach',{},'target_closed');else wc.fire('destroyed');
+      else if(end==='detach')wc.debugger.fire('detach',{},'target_closed');
+      else {
+        expect(svc.researchTabStatus(nav.tabId, 'thread')).toBe('available');
+        wc.destroyed = true; wc.fire('destroyed');
+        expect(svc.researchTabStatus(nav.tabId, 'thread')).toBe('missing');
+      }
       await flush(30);
       // The tab operation queue must be released even if the old native command never settles.
       wc.loadImpl=async()=>{wc.fire('did-navigate',{},wc.url,200);};
-      const next=await svc.open({tabId:nav.tabId,url:'https://example.org/after'});
+      const next=end==='destroyed' ? (await openTab(svc,'https://example.org/after')).nav : await svc.open({tabId:nav.tabId,url:'https://example.org/after'});
       expect(next.nav.outcome.kind).toBe('ok');
       finishEnable();await flush(30);
       expect(wc.debugger.sent.filter(c=>c.method.startsWith('Network.')).map(c=>c.method)).toEqual(['Network.enable']);
@@ -5579,4 +5584,49 @@ describe('researchDocument BrowserService integration', () => {
       await failed;
     } finally { f.dom.window.close(); f.svc.disposeAll(); }
   });
+});
+
+it('research permission retains only main-frame HTTP redirects for its exact navigation', async () => {
+  const {svc} = make();
+  const pending = svc.open({url:'https://article.example/a',ownerThreadId:'research-thread'});
+  await flush(); const wc = wcOf(); wc.osPid = 4321;
+  wc.fire('did-start-navigation',{url:'https://article.example/a',isMainFrame:true,isSameDocument:false});
+  wc.fire('will-redirect',{url:'https://article.example/b',isMainFrame:true,preventDefault:vi.fn()});
+  wc.fire('will-redirect',{url:'https://advert.example/',isMainFrame:false,preventDefault:vi.fn()});
+  wc.fire('did-navigate',{},'https://article.example/b',200);
+  const opened = await pending;
+  expect(svc.researchNavigationUrls(opened.tabId,opened.nav.navigationId)).toEqual(['https://article.example/a','https://article.example/b']);
+  wc.fire('did-navigate',{},'https://article.example/other',200);
+  expect(svc.researchNavigationUrls(opened.tabId,opened.nav.navigationId)).toEqual(['https://article.example/a','https://article.example/b']);
+  expect(svc.researchNavigationUrls(opened.tabId,'unrelated')).toEqual([]);
+  expect(svc.researchOwnsTab(opened.tabId,'research-thread')).toBe(true);
+  await svc.withResearchDriving(opened.tabId,'research-thread', async()=>{
+    expect(focuses().at(-1)).toMatchObject({tabId:opened.tabId,active:true});
+  });
+  svc.keep(opened.tabId);
+  expect(svc.researchOwnsTab(opened.tabId,'research-thread')).toBe(false);
+  svc.disposeAll();
+});
+
+it('wakes research navigation waits on a new main-frame intent before the old URL commits', async () => {
+  const {svc} = make(), opened = await openTab(svc,'https://article.example/a','thread');
+  const {wc} = opened, tabId = opened.nav.tabId;
+  wc.fire('did-start-navigation',{url:'https://article.example/a',isMainFrame:true,isSameDocument:false});
+  let woke = false;
+  const wait = svc.waitForResearchNavigation(tabId,svc.locationFacts(tabId),new AbortController().signal).then(()=>{woke=true;});
+  wc.fire('did-start-navigation',{url:'https://article.example/other',isMainFrame:true,isSameDocument:false});
+  await flush();
+  expect(woke).toBe(true);
+  await wait;
+  svc.disposeAll();
+});
+
+it('preserves a native webContents destruction as tab_closed after removing its registry entry', async () => {
+  const {svc} = make(), opened = await openTab(svc,'https://article.example/a','thread');
+  const events: Array<{id:string;reason:string;status:string}> = [];
+  svc.onTabDestroyed((id,reason)=>events.push({id,reason,status:svc.researchTabStatus(id,'thread')}));
+  expect(svc.researchTabStatus(opened.nav.tabId,'thread')).toBe('available');
+  opened.wc.destroyed = true; opened.wc.fire('destroyed');
+  expect(events).toEqual([{id:opened.nav.tabId,reason:'tab_closed',status:'missing'}]);
+  svc.disposeAll();
 });

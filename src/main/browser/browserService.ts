@@ -343,7 +343,8 @@ export class BrowserService {
   /** 正在进行的 agent 驱动窗口，一次一帧（可以同时有好几帧，各在各的标签上）。 */
   private readonly drivingFrames: DrivingFrame[] = [];
   /** 「这个标签没了」的订阅者。见 `onTabDestroyed`。 */
-  private readonly tabGone = new Set<(tabId: string) => void>();
+  private readonly tabGone = new Set<(tabId: string, reason: string) => void>();
+  private readonly researchNavigations = new Map<string, { navigationId: string; urls: string[]; accepting: boolean }>();
   /**
    * 每个标签一份控制台错误缓冲。**不是全局一份**：报告是按标签取的，混在一起
    * 会把别的标签的错误算进这一次操作。随标签销毁一起清掉（见 destroyView）。
@@ -619,6 +620,20 @@ export class BrowserService {
     if (!this.registry.toState().tabs.some(tab => tab.id === tabId)) return 'missing';
     const owner = this.registry.ownerThreadIdOf(tabId);
     return owner === null || owner === threadId ? 'available' : 'foreign';
+  }
+
+  researchOwnsTab(tabId: string, threadId: string): boolean {
+    return this.registry.has(tabId) && this.registry.ownerThreadIdOf(tabId) === threadId;
+  }
+
+  researchNavigationUrls(tabId: string, navigationId: string): readonly string[] {
+    const record = this.researchNavigations.get(tabId);
+    return record?.navigationId === navigationId ? [...record.urls] : [];
+  }
+
+  async withResearchDriving<T>(tabId: string, threadId: string, work: () => Promise<T>): Promise<T> {
+    if (this.researchTabStatus(tabId, threadId) !== 'available') throw new KydogError('browser.not_dispatchable', '研究标签不可用');
+    return this.withAgentDriving(tabId, threadId, work, '读取研究正文');
   }
 
   private emit(): void {
@@ -957,7 +972,7 @@ export class BrowserService {
       logger.info('browser.tab', 'agent 标签到上限，关掉最久没用的那个', { tabId: victim, url: logUrl(rec.url) });
       // 与 close / disposeForThread 同一个顺序：先摘账本、再摘 view，布局在最后。
       this.registry.close(victim);
-      this.destroyView(victim);
+      this.destroyView(victim, 'tab_evicted');
     }
     if (out.length) this.applyLayout();
     return out;
@@ -1032,7 +1047,13 @@ export class BrowserService {
       logger.warn('browser.nav', '被 URL 闸拦下', { url: logUrl(url), reason: v.reason });
     };
     wc.on('will-navigate', (details) => guardNav(details, details.url, details.isMainFrame));
-    wc.on('will-redirect', (details) => guardNav(details, details.url, details.isMainFrame));
+    wc.on('will-redirect', (details) => {
+      guardNav(details, details.url, details.isMainFrame);
+      const record = this.researchNavigations.get(id);
+      const tracker = this.navs.get(id);
+      if (details.isMainFrame && checkUrl(details.url).ok && record?.accepting && tracker
+        && !tracker.settled && tracker.navigationId === record.navigationId) record.urls.push(new URL(details.url).href);
+    });
     wc.on('will-frame-navigate', (details) => guardNav(details, details.url, details.isMainFrame));
 
     // **不定论**，只喂两件事：下载的关联集合、以及「跨文档导航在途」这个窗口
@@ -1040,6 +1061,8 @@ export class BrowserService {
     // 当成本次导航的结果）。
     wc.on('did-start-navigation', (details) => {
       if (details.isMainFrame) {
+        const record = this.researchNavigations.get(id);
+        if (record?.accepting && !record.urls.includes(new URL(details.url).href)) record.accepting = false;
         this.pristineViews.delete(id);
         if (details.url !== 'about:blank') this.networkBootstrapPending.delete(id);
         const prior = this.locationFacts(id);
@@ -1136,7 +1159,12 @@ export class BrowserService {
       void this.applyViewport(id, this.stage?.bounds ?? null);
     });
 
-    wc.once('destroyed', () => { this.invalidateNetworkNative(id); void this.network.get(id)?.close('tab_closed'); });
+    wc.once('destroyed', () => {
+      this.invalidateNetworkNative(id); void this.network.get(id)?.close('tab_closed');
+      // Native destruction can precede an explicit registry close. destroyView
+      // removes the view before closing WebContents, so our own closes do not recurse.
+      if (this.views.has(id)) this.close(id);
+    });
     wc.on('render-process-gone', (_e, details) => {
       this.invalidateNetworkNative(id);
       void this.network.get(id)?.close('crashed');
@@ -1204,7 +1232,7 @@ export class BrowserService {
     if (this.registry.toState().revision !== before) this.emit();
   }
 
-  private destroyView(id: string): void {
+  private destroyView(id: string, reason = 'tab_closed'): void {
     const view = this.views.get(id);
     if (!view) return;
     this.invalidateNetworkNative(id);
@@ -1214,6 +1242,7 @@ export class BrowserService {
     this.pristineViews.delete(id);
     this.views.delete(id);
     this.locations.delete(id);
+    this.researchNavigations.delete(id);
     this.documentStatusCodes.delete(id);
     this.snapshots.delete(id);
     this.emulationScales.delete(id);
@@ -1242,7 +1271,7 @@ export class BrowserService {
     for (const fn of [...this.tabGone]) {
       // 一个订阅者抛异常不能让别的订阅者收不到通知，更不能让 close() / disposeAll()
       // 半路停下来（那会留下没有账本记录、却还在跑页面的 view）。
-      try { fn(id); } catch (err) { logger.warn('browser.tab', '标签销毁的订阅者抛了异常', { id, err: String(err) }); }
+      try { fn(id, reason); } catch (err) { logger.warn('browser.tab', '标签销毁的订阅者抛了异常', { id, err: String(err) }); }
     }
   }
 
@@ -1256,7 +1285,7 @@ export class BrowserService {
    * **反过来的方向刻意没有**（本模块不 import loginFlow）：那会是一条 import 环，
    * 而 `browserService` 是几乎所有浏览器模块的叶子。
    */
-  onTabDestroyed(fn: (tabId: string) => void): () => void {
+  onTabDestroyed(fn: (tabId: string, reason: string) => void): () => void {
     this.tabGone.add(fn);
     return () => { this.tabGone.delete(fn); };
   }
@@ -1272,6 +1301,31 @@ export class BrowserService {
     if (!wc) throw new KydogError('browser.no_tab', `没有这个标签页：${tabId}`);
     return { ...(this.locations.get(tabId) ?? { documentEpoch: 0, routeRevision: 0, navigationEvent: null, navigationSequence: 0, navigationType: null, navigationUrl: null }),
       currentUrl: wc.getURL() };
+  }
+
+  /** Subscribe before checking the pending main-frame identity, avoiding a lost commit. */
+  waitForResearchNavigation(tabId: string, before: BrowserLocationFacts, signal: AbortSignal): Promise<string | undefined> {
+    assertNotAborted(signal);
+    const wc = this.webContentsOf(tabId);
+    if (!wc) return Promise.resolve('tab_closed');
+    return new Promise(resolve => {
+      const finish = (reason?: string) => { cleanup(); resolve(reason); };
+      const committed = () => finish();
+      const started = (details: Event<WebContentsDidStartNavigationEventParams>) => { if (details.isMainFrame) finish(); };
+      const failed = (_event: Event, _code: number, _description: string, _url: string, isMainFrame: boolean) => { if (isMainFrame) finish('navigation_failed'); };
+      const abort = () => finish('cancelled');
+      const offGone = this.onTabDestroyed((id, reason) => { if (id === tabId) finish(reason); });
+      const offUnavailable = this.onTabUnavailable((id, reason) => { if (id === tabId) finish(`renderer_crashed:${reason}`); });
+      const cleanup = () => {
+        wc.off('did-navigate', committed); wc.off('did-fail-load', failed); wc.off('did-start-navigation', started);
+        signal.removeEventListener('abort', abort); offGone(); offUnavailable();
+      };
+      wc.on('did-navigate', committed); wc.on('did-fail-load', failed); wc.on('did-start-navigation', started);
+      signal.addEventListener('abort', abort, { once: true });
+      const now = this.locationFacts(tabId);
+      if (signal.aborted) abort();
+      else if (now.navigationSequence !== before.navigationSequence || now.documentEpoch !== before.documentEpoch) committed();
+    });
   }
 
   /** Trusted research-only transport. The binding is scoped to one isolated main-frame world. */
@@ -1312,7 +1366,7 @@ export class BrowserService {
         const navigate = (details: Event<WebContentsDidStartNavigationEventParams>) => { if (details.isMainFrame) listener('document_navigation'); };
         const committed = () => listener('document_navigation');
         const inPage = (_event: Event, _url: string, isMainFrame: boolean) => { if (isMainFrame) listener('document_navigation'); };
-        const offDestroyed = this.onTabDestroyed(id => { if (id === tabId) listener('tab_closed'); });
+        const offDestroyed = this.onTabDestroyed((id, reason) => { if (id === tabId) listener(reason); });
         wc.on('destroyed', gone); wc.on('render-process-gone', gone); wc.debugger.on('detach', gone);
         wc.on('did-start-navigation', navigate); wc.on('did-navigate', committed); wc.on('did-navigate-in-page', inPage);
         return () => {
@@ -1522,6 +1576,7 @@ export class BrowserService {
         }
       : undefined);
     this.navs.set(tabId, tracker);
+    if (targetUrl !== null) this.researchNavigations.set(tabId, { navigationId: tracker.navigationId, urls: [new URL(targetUrl).href], accepting: true });
     // **act 只负责触发，不等它返回。** `loadURL` 的 promise 要等 did-finish-load 才
     // resolve（electron.d.ts 明写），一个永不返回的 <script src> 就能让它永远挂着 ——
     // 时限罩在它**后面**等于没有时限，`browser_open` 这个工具调用会无限挂起。
@@ -1533,7 +1588,11 @@ export class BrowserService {
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
     try { return await this.finishNavigation(tabId, wc, tracker, signal); }
-    finally { signal?.removeEventListener('abort', abort); }
+    finally {
+      signal?.removeEventListener('abort', abort);
+      const record = this.researchNavigations.get(tabId);
+      if (record?.navigationId === tracker.navigationId) record.accepting = false;
+    }
   }
 
   /**

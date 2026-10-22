@@ -13,14 +13,17 @@ export type BrowserReadInput = BrowserAttemptOwner & {
   remainingDomBytes: () => Promise<number>;
   onDocument: (doc: ResearchDocumentSnapshot) => Promise<'accepted' | 'continue'>;
 };
-export type BrowserReadResult =
+export type BrowserLeaseUnavailable = BrowserSourceKey & { leaseId: string; attemptId: string | null; reason: string };
+export type BrowserReadResult = (
   | { status: 'readable'; document: ResearchDocumentFacts }
-  | { status: 'waiting_user' | 'failed' | 'budget_blocked'; reason: string };
+  | { status: 'waiting_user' | 'failed' | 'budget_blocked'; reason: string; finalUrl?: string; mainStatusCode?: number }) & { leaseId?: string };
 export interface BrowserReader {
+  /** Runtime-only lease events; IDs must never be persisted or exposed over RPC. */
+  onLeaseUnavailable?(listener: (event: BrowserLeaseUnavailable) => void): () => void;
   read(input: BrowserReadInput): Promise<BrowserReadResult>;
   openForUser(input: BrowserSourceKey & {
-    requestedUrl: string; signal: AbortSignal; beforeNavigate: () => Promise<void>;
-  }): Promise<{ tabId: string }>;
+    requestedUrl: string; signal: AbortSignal; beforeNavigate: () => Promise<void>; attemptId?: string | null;
+  }): Promise<{ tabId: string; leaseId: string }>;
   currentTab(key: BrowserSourceKey): string | undefined;
   release(key: BrowserSourceKey, options: { closeOwned: boolean }): Promise<void>;
   dispose(): Promise<void>;

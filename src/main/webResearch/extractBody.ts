@@ -1,3 +1,4 @@
+import { VERIFICATION_WIDGET_SELECTOR } from './verificationWidget';
 import { createHash } from 'node:crypto';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
@@ -16,7 +17,6 @@ export type ExtractBodyResult = BodyResult & { title?: string; publishedAt?: str
 const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d];
 const blockSelector = 'h1,h2,h3,h4,h5,h6,p,li,pre,blockquote,td,th';
 const removedSelector = 'script,style,noscript,nav,aside,form,iframe,[role="navigation"]';
-const challengeSelector = 'input[name="captcha"],.g-recaptcha,.h-captcha,iframe[src*="recaptcha"],iframe[src*="hcaptcha"]';
 
 function mimeType(header?: string): string { return header?.split(';', 1)[0].trim().toLowerCase() ?? ''; }
 function isPdf(bytes: Uint8Array): boolean { return PDF_MAGIC.every((value, index) => bytes[index] === value); }
@@ -106,7 +106,7 @@ export async function extractBody(input: ExtractBodyInput): Promise<ExtractBodyR
   const dom = new JSDOM(raw, { url: input.finalUrl, contentType: 'text/html' });
   try {
     const document = dom.window.document;
-    if (document.querySelector(challengeSelector)) return { status: 'needs_browser',
+    if (document.querySelector(VERIFICATION_WIDGET_SELECTOR)) return { status: 'needs_browser',
       reason: 'verification_widget', passages: [], completeness: 'unknown' };
     const hadScript = document.querySelector('script') !== null;
     const siteIconUrl = declaredSiteIcon(document, input.finalUrl);
