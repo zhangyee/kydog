@@ -14,6 +14,7 @@ import { TaskStore } from './taskStore';
 import { completeReport, evidencePublicationState, validateReportCitations,
   type ReportValidationError } from './report';
 import { resolveSourceUrls } from './sourceUrl';
+import { buildTaskSnapshot as snapshot } from './taskState';
 
 export type TaskSubmitInput = {
   researchRunId?: string;
@@ -76,39 +77,6 @@ function page(input: TaskInspectInput): { offset: number; size: number } {
 }
 function sorted(sources: Iterable<WebResearchTaskSource>): WebResearchTaskSource[] {
   return [...sources].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.sourceId.localeCompare(b.sourceId));
-}
-function snapshot(task: WebResearchTaskRecord, sources: Iterable<WebResearchTaskSource>): WebResearchTaskSnapshot {
-  const all = sorted(sources);
-  const counts = { discoveries: task.discoveryCount ?? all.reduce((n, s) => n + s.discoveries.length, 0),
-    sources: all.length, queued: 0, fetching: 0, extracting: 0, completed: 0,
-    failed: 0, cancelled: 0, unprocessed: 0, processed: 0, evidenceReady: 0,
-    irrelevant: 0, claims: 0, evidence: 0 };
-  const siteMap = new Map<string, WebResearchTaskSnapshot['sites'][number]>();
-  for (const source of all) {
-    counts[source.status]++;
-    if (source.status === 'completed' || source.status === 'failed' || source.status === 'cancelled' ||
-      source.status === 'unprocessed') counts.processed++;
-    counts.claims += source.extraction?.claims.length ?? 0;
-    counts.evidence += source.extraction?.evidence.length ?? 0;
-    if (source.status === 'completed' && source.extraction?.evidence.some((evidence) =>
-      evidence.verification === 'grounded')) counts.evidenceReady++;
-    else if (source.status === 'completed' && source.extraction?.status === 'irrelevant') counts.irrelevant++;
-    try {
-      const domain = new URL(source.finalUrl ?? source.requestedUrl).hostname.toLowerCase();
-      const current = siteMap.get(domain) ?? { domain, sourceCount: 0, processed: 0, iconAvailable: false };
-      current.sourceCount++;
-      if (source.status === 'completed' || source.status === 'failed' || source.status === 'cancelled' ||
-        source.status === 'unprocessed') current.processed++;
-      current.iconAvailable ||= Boolean(source.siteIconUrl);
-      siteMap.set(domain, current);
-    } catch { /* source URLs were validated before enqueue; tolerate legacy records */ }
-  }
-  return { researchRunId: task.researchRunId, threadId: task.threadId,
-    originalQuestion: task.originalQuestion, revision: task.revision,
-    status: task.status, statusReason: task.statusReason, reportPath: task.reportPath,
-    createdAt: task.createdAt, updatedAt: task.updatedAt,
-    budget: { ...task.budget }, usage: { ...task.usage }, counts,
-    sites: [...siteMap.values()].sort((a, b) => a.domain.localeCompare(b.domain)) };
 }
 
 /** The agent coordinates research; this service only performs durable source work. */

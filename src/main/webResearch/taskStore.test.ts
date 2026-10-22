@@ -5,6 +5,8 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TaskStore } from './taskStore';
 import { makeSearchObservation } from './searchObservation';
+import { DEFAULT_WEB_RESEARCH_TASK_BUDGET, type WebResearchTaskRecord,
+  type WebResearchTaskSource } from '../../shared/webResearchTask';
 
 const roots: string[] = [];
 
@@ -123,5 +125,51 @@ describe('TaskStore search observations', () => {
     release();
     await locking;
     await expect(confirming).rejects.toMatchObject({ code: 'research.observation_already_submitted' });
+  });
+});
+
+describe('TaskStore browser facts compatibility', () => {
+  it('round-trips browser attempts separately from HTTP facts and accepts an older source', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kydog-task-store-'));
+    roots.push(root);
+    const store = new TaskStore(root);
+    const task: WebResearchTaskRecord = {
+      researchRunId: randomUUID(), threadId: randomUUID(), createdByRunId: randomUUID(), projectRoot: root,
+      originalQuestion: 'Question?', createdAt: '2026-10-22T00:00:00Z', updatedAt: '2026-10-22T00:00:00Z',
+      revision: 1, status: 'running', angles: [], attempts: [], observationIds: [], discoveryCount: 1,
+      budget: { ...DEFAULT_WEB_RESEARCH_TASK_BUDGET }, browserDomBytes: 234,
+      usage: { candidates: 1, fetchesDispatched: 2, receivedBytes: 13, modelCalls: 0 },
+    };
+    await store.createTask(task);
+    const legacy: WebResearchTaskSource = {
+      sourceId: randomUUID(), requestedUrl: 'https://blog.csdn.net/author/article',
+      finalUrl: 'https://blog.csdn.net/author/article', createdAt: task.createdAt, updatedAt: task.updatedAt,
+      status: 'failed', reason: 'HTTP 521', statusCode: 521, contentType: 'text/html', receivedBytes: 13,
+      discoveries: [], passages: [],
+    };
+    const modern: WebResearchTaskSource = { ...legacy, sourceId: randomUUID(), status: 'waiting_user',
+      browserDomBytes: 234, retrieval: { method: 'browser', attemptId: 'attempt-1' },
+      browser: { trigger: 'csdn_http_521', automaticAttemptUsed: true, attempts: [{
+        attemptId: 'attempt-1', sequence: 1, initiatedBy: 'automatic', phase: 'waiting_user',
+        startedAt: task.createdAt, finishedAt: task.updatedAt, requestedUrl: legacy.requestedUrl,
+        finalUrl: 'https://blog.csdn.net/author/article?verified=1', navigationMode: 'navigate',
+        navigationReserved: true, mainStatusCode: 200, reason: 'browser_read_timeout', domBytes: 234,
+        document: { url: 'https://blog.csdn.net/author/article?verified=1', rootRule: '#content_views',
+          identity: { documentEpoch: 2, routeRevision: 3, navigationSequence: 4 }, utf8Bytes: 234, mainStatusCode: 200 },
+      }] } };
+    await store.saveSource(task, modern);
+    await store.saveSource(task, legacy);
+    const loadedModern = await store.loadSource(task, modern.sourceId);
+    expect(loadedModern).toEqual(modern);
+    const loadedLegacy = await store.loadSource(task, legacy.sourceId);
+    expect(loadedLegacy).toEqual(legacy);
+    expect(loadedModern.browser?.attempts[0].mainStatusCode).toBe(200);
+    expect(loadedLegacy.browser).toBeUndefined();
+    expect(loadedModern).toMatchObject({
+      statusCode: 521, receivedBytes: 13, browserDomBytes: 234,
+    });
+    expect(await store.loadTask(task.threadId, task.researchRunId)).toMatchObject({
+      browserDomBytes: 234, usage: { receivedBytes: 13 },
+    });
   });
 });

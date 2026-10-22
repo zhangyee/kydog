@@ -15,6 +15,33 @@ const deps = (client: (url: string, init: { redirect: string; route: { kind: str
 });
 
 describe('fetchSource', () => {
+  it('retains small HTTP diagnostics on 521 while cancelling its body; 200 still reads body bytes', async () => {
+    const run = async (status: number, server = 'WAF') => {
+      let cancelled = false;
+      const bytes = new TextEncoder().encode('challenge or article');
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(bytes); },
+        pull(controller) { controller.close(); },
+        cancel() { cancelled = true; },
+      });
+      const result = await fetchSource({ url: 'https://blog.csdn.net/author/article', budget: budget(),
+        signal: new AbortController().signal }, deps(async () => new Response(stream, {
+          status, headers: { 'content-type': 'text/html; charset=utf-8', server, 'set-cookie': 'secret=value' },
+        })));
+      return { result, cancelled };
+    };
+    const success = await run(200);
+    expect(new TextDecoder().decode(success.result.bytes)).toBe('challenge or article');
+    expect(success.result.receivedBytes).toBe(20);
+    const error = await run(521);
+    expect(error.result).toMatchObject({ status: 'http_error', statusCode: 521,
+      contentType: 'text/html; charset=utf-8', server: 'WAF', receivedBytes: 0 });
+    expect(error.cancelled).toBe(true);
+    expect(error.result.bytes).toHaveLength(0);
+    const oversized = await run(521, 'x'.repeat(1000));
+    expect(oversized.result.server?.length).toBeLessThanOrEqual(256);
+  });
+
   it('retries one 403 with IAB cookies for that URL and never exposes the cookie in the result', async () => {
     const calls: Array<{ url: string; headers?: Record<string, string> }> = [];
     const client = vi.fn(async (url: string, init: { headers?: Record<string, string> }) => {

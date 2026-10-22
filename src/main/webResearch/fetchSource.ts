@@ -16,6 +16,8 @@ export type FetchResult = {
   reason?: string;
   statusCode?: number;
   contentType?: string;
+  /** Bounded response diagnostic; never retain arbitrary response headers. */
+  server?: string;
   canonicalUrl?: string;
   bytes: Uint8Array;
   receivedBytes: number;
@@ -182,6 +184,8 @@ export async function fetchSource(input: FetchInput, deps: FetchDeps): Promise<F
         response = await send(requestHeaders(await deps.getMediumBrowserHeaders(current)));
       }
       const statusCode = response.status;
+      const contentType = response.headers.get('content-type') ?? undefined;
+      const server = response.headers.get('server')?.slice(0, 256);
       if (statusCode >= 300 && statusCode < 400) {
         await response.body?.cancel();
         const location = response.headers.get('location');
@@ -200,12 +204,11 @@ export async function fetchSource(input: FetchInput, deps: FetchDeps): Promise<F
         await response.body?.cancel();
         if (medium && (statusCode === 401 || statusCode === 403) && mediumCookieMode) {
           return result('needs_browser', `HTTP ${statusCode} after IAB cookie retry`, {
-            finalUrl: current, statusCode, receivedBytes,
+            finalUrl: current, statusCode, contentType, server, receivedBytes,
           });
         }
-        return result('http_error', `HTTP ${statusCode}`, { finalUrl: current, statusCode, receivedBytes });
+        return result('http_error', `HTTP ${statusCode}`, { finalUrl: current, statusCode, contentType, server, receivedBytes });
       }
-      const contentType = response.headers.get('content-type') ?? undefined;
       const mediaType = contentType?.split(';', 1)[0].trim().toLowerCase();
       if (mediaType === 'application/pdf') {
         await response.body?.cancel();

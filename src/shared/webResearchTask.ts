@@ -83,7 +83,40 @@ export type SearchObservationSummary = Pick<SearchObservation,
 
 export type WebResearchTaskState = 'running' | 'paused' | 'completed' | 'cancelled' | 'failed';
 export type WebResearchSourceState = 'queued' | 'fetching' | 'extracting' | 'completed' |
-  'failed' | 'cancelled' | 'unprocessed';
+  'failed' | 'cancelled' | 'unprocessed' | 'browser_queued' | 'browser_reading' | 'waiting_user';
+
+export type BrowserTrigger = 'fetch_needs_browser' | 'body_needs_browser' | 'csdn_http_521' |
+  'grounded_barrier' | 'legacy_record';
+
+export type ResearchDocumentIdentity = {
+  documentEpoch: number;
+  routeRevision: number;
+  navigationSequence: number;
+};
+export type ResearchDocumentFacts = {
+  url: string;
+  identity: ResearchDocumentIdentity;
+  rootRule: string;
+  utf8Bytes: number;
+  mainStatusCode?: number;
+};
+export type BrowserReadAttempt = {
+  attemptId: string;
+  sequence: number;
+  initiatedBy: 'automatic' | 'user' | 'resume';
+  phase: 'queued' | 'reading' | 'readable' | 'waiting_user' | 'failed' | 'budget_blocked' |
+    'interrupted' | 'cancelled';
+  startedAt: string;
+  finishedAt?: string;
+  requestedUrl: string;
+  finalUrl?: string;
+  navigationMode: 'navigate' | 'capture_existing';
+  navigationReserved: boolean;
+  mainStatusCode?: number;
+  reason?: string;
+  document?: ResearchDocumentFacts;
+  domBytes: number;
+};
 
 export type WebResearchTaskRecord = {
   researchRunId: string;
@@ -108,6 +141,7 @@ export type WebResearchTaskRecord = {
   budget: ResearchBudget;
   usage: ResearchUsage;
   modelSnapshot?: { providerId: string; modelId: string; runtimeRevision: number };
+  browserDomBytes?: number;
 };
 
 export type WebResearchTaskSource = {
@@ -132,6 +166,9 @@ export type WebResearchTaskSource = {
   /** Page-declared HTTP(S) icon URL. Kept small and fetched only when the renderer asks for it. */
   siteIconUrl?: string;
   pendingReanalysis?: boolean;
+  browser?: { trigger: BrowserTrigger; automaticAttemptUsed: boolean; attempts: BrowserReadAttempt[] };
+  browserDomBytes?: number;
+  retrieval?: { method: 'http' | 'browser'; attemptId?: string };
 };
 
 export type WebResearchCounts = {
@@ -149,6 +186,9 @@ export type WebResearchCounts = {
   irrelevant: number;
   claims: number;
   evidence: number;
+  browser_queued?: number;
+  browser_reading?: number;
+  waiting_user?: number;
 };
 
 export type WebResearchSiteSummary = {
@@ -172,6 +212,7 @@ export type WebResearchTaskSnapshot = {
   usage: ResearchUsage;
   counts: WebResearchCounts;
   sites: WebResearchSiteSummary[];
+  browserDomBytes?: number;
 };
 
 export const DEFAULT_WEB_RESEARCH_TASK_BUDGET: Readonly<ResearchBudget> = Object.freeze({
