@@ -8,6 +8,16 @@ function fixture(html: string, url = 'https://example.org/article') {
   const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
   windows.push(dom);
   Object.assign(dom.window, { TextEncoder });
+  // JSDOM omits this native HTMLElement capability. Model its DOM attribute
+  // semantics here; the isolated Electron probe exercises the actual property.
+  const editable = (element: Element | null): boolean => {
+    if (!element) return false;
+    const value = element.getAttribute('contenteditable')?.toLowerCase();
+    if (value === 'false') return false;
+    if (value === '' || value === 'true' || value === 'plaintext-only') return true;
+    return editable(element.parentElement);
+  };
+  Object.defineProperty(dom.window.HTMLElement.prototype, 'isContentEditable', { get() { return editable(this); } });
   const run = (op: string, extra = {}): any => dom.window.eval(`(${SOURCE})(${JSON.stringify({ op, token: 'lease', url, ...extra })})`);
   run('observe');
   return { dom, document: dom.window.document, run };
@@ -299,5 +309,63 @@ describe('researchDocument failed setup cleanup', () => {
     await expect(f.open()).rejects.toThrow('command_result_lost');
     expect(f.commands.slice(start).some(c => c.method === 'Runtime.removeBinding')).toBe(true);
     expect(f.dom.window.__kydogResearchDocument).toBeUndefined();
+  });
+});
+
+describe('researchDocument root sanitization', () => {
+  it.each(['input', 'textarea', 'form', 'aside'])(
+    'rejects a CSDN %s root after capturing the same supported selector as ordinary content', tag => {
+      const f = fixture('<div id="content_views"><p>正文证据</p></div>', 'https://blog.csdn.net/a/article/details/1');
+      const good = f.run('capture', { maxBytes: 100_000 });
+      expect(good.status).toBe('snapshot');
+      expect(good.html).toContain('正文证据');
+      const replacement = f.document.createElement(tag);
+      replacement.id = 'content_views';
+      if (tag === 'input') replacement.setAttribute('value', 'private-root-input');
+      else replacement.textContent = 'private-root-input';
+      f.document.querySelector('#content_views')!.replaceWith(replacement);
+      expect(replacement.outerHTML).toContain('private-root-input');
+      const blocked = f.run('capture', { maxBytes: 100_000 });
+      expect(blocked).toMatchObject({ status: 'pending', reason: 'article_root_excluded' });
+      expect(blocked).not.toHaveProperty('html');
+      expect(replacement.outerHTML).toContain('private-root-input');
+      const readable = f.document.createElement('div');
+      readable.id = 'content_views'; readable.textContent = '恢复正文';
+      replacement.replaceWith(readable);
+      expect(f.run('capture', { maxBytes: 100_000 })).toMatchObject({ status: 'snapshot', html: expect.stringContaining('恢复正文') });
+    });
+
+  it.each(['root', 'ancestor'] as const)('blocks %s editability and observes the return to readonly content', async target => {
+    const f = bridgeFixture(), lease = await f.open();
+    const root = f.document.querySelector('article')!;
+    const editable = target === 'root' ? root : root.parentElement!;
+    const good = await lease.capture(100_000);
+    expect(good).toMatchObject({ status: 'snapshot', document: { html: expect.stringContaining('正文证据') } });
+    root.textContent = 'private-editor-value';
+    editable.setAttribute('contenteditable', 'true');
+    expect((root as HTMLElement).isContentEditable).toBe(true);
+    const blocked = await lease.capture(100_000);
+    expect(blocked).toMatchObject({ status: 'pending', reason: 'article_root_excluded' });
+    expect(blocked).not.toHaveProperty('document');
+    // This attribute is the only change that can wake the waiter; no text mutation
+    // or subsequent capture hides a missed ancestor-editability notification.
+    const waiting = lease.waitForChange(blocked.revision);
+    editable.setAttribute('contenteditable', 'false');
+    await waiting;
+    const recovered = await lease.capture(100_000);
+    expect(recovered).toMatchObject({ status: 'snapshot', document: { html: expect.stringContaining('private-editor-value') } });
+    expect(recovered.revision).toBeGreaterThan(blocked.revision);
+    await lease.dispose();
+  });
+
+  it('keeps explicitly readonly root and descendants while excluding actual editable descendants', () => {
+    const f = fixture('<div contenteditable="true"><article contenteditable="false"><p contenteditable="false">readonly evidence</p><p contenteditable="true">private-editor-value</p></article></div>');
+    const root = f.document.querySelector('article')!;
+    expect((root as HTMLElement).isContentEditable).toBe(false);
+    expect(root.textContent).toContain('private-editor-value');
+    const captured = f.run('capture', { maxBytes: 100_000 });
+    expect(captured.status).toBe('snapshot');
+    expect(captured.html).toContain('readonly evidence');
+    expect(captured.html).not.toContain('private-editor-value');
   });
 });

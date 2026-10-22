@@ -18,29 +18,29 @@
     const select = () => {
       for (const selector of selectors) {
         const element = document.querySelector(selector);
-        if (element) return { element, rule: selector };
+        if (element) return { element, rule: selector, editable: element.isContentEditable === true };
       }
-      return { element: null, rule: '' };
+      return { element: null, rule: '', editable: false };
     };
     const state = { token: request.token, url: location.href, revision: 0, root: select(), observer: null, drain: null };
     const observe = () => {
       state.observer.disconnect();
       const root = state.root.element;
       if (!root) {
-        state.observer.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['id', 'class'] });
+        state.observer.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['id', 'class', 'contenteditable'] });
       } else {
         state.observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true });
         // The ancestor chain detects replacement/removal and selector changes;
         // mutations in unrelated sidebars do not trigger article checks.
         for (let parent = root.parentNode; parent; parent = parent.parentNode) {
-          state.observer.observe(parent, { childList: true, attributes: true, attributeFilter: ['id', 'class'] });
+          state.observer.observe(parent, { childList: true, attributes: true, attributeFilter: ['id', 'class', 'contenteditable'] });
         }
       }
     };
     const changed = records => {
       if (!records.length) return;
       const next = select(), old = state.root.element;
-      const replaced = next.element !== old || next.rule !== state.root.rule;
+      const replaced = next.element !== old || next.rule !== state.root.rule || next.editable !== state.root.editable;
       if (!replaced && !records.some(record => old && (record.target === old || old.contains(record.target)))) return;
       state.root = next;
       state.revision++;
@@ -63,8 +63,14 @@
   if (request.op !== 'capture') return { status: 'invalidated', reason: 'unsupported_operation', revision };
   const root = state.root.element;
   if (!root) return { status: 'pending', reason: 'article_root_missing', revision, url };
+  const excluded = 'script,style,link,meta,form,input,textarea,select,button,nav,aside,iframe,frame,object,embed,canvas,[role="navigation"],[role="complementary"]';
+  // Inspect the live root: cloning detaches it from an editable ancestor. Native
+  // editability also preserves explicit contenteditable=false readonly islands.
+  if (root.matches(excluded) || root.isContentEditable === true) return { status: 'pending', reason: 'article_root_excluded', revision, url };
   const clone = root.cloneNode(true);
-  clone.querySelectorAll('script,style,link,meta,form,input,textarea,select,button,nav,aside,iframe,frame,object,embed,canvas,[contenteditable],[role="navigation"],[role="complementary"]').forEach(node => node.remove());
+  clone.querySelectorAll('*').forEach(node => {
+    if (node.matches(excluded) || node.isContentEditable === true) node.remove();
+  });
   // Never return active markup or form attributes copied onto arbitrary nodes.
   for (const element of [clone, ...clone.querySelectorAll('*')]) {
     for (const attribute of [...element.attributes]) {
