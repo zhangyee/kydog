@@ -728,11 +728,18 @@ export class WebResearchTaskService {
   private async extractAcceptedBody(runtime: Runtime, source: WebResearchTaskSource): Promise<void> {
     const { task, meter } = runtime, signal = runtime.controller.signal;
     if (signal.aborted) return;
-    const hash = source.contentHash, retrievalAttempt = source.retrieval?.attemptId;
+    const hash = source.contentHash, retrievalAttempt = source.retrieval?.attemptId, status = source.status;
     const model = task.modelSnapshot ?? await this.deps.resolveModel(task.threadId);
     await this.taskSerial(runtime, async () => { task.modelSnapshot ??= model; await this.persistTask(runtime); });
     const admitted = await this.sourceSerial(runtime, source.sourceId, async () => {
-      if (signal.aborted || task.status !== 'running' || source.contentHash !== hash || source.retrieval?.attemptId !== retrievalAttempt) return false;
+      if (source.contentHash !== hash || source.retrieval?.attemptId !== retrievalAttempt || source.status !== status) return false;
+      if (task.status === 'paused' && !signal.aborted) {
+        // An independent browser budget can pause the task while this accepted
+        // HTTP/browser body awaits model admission. Keep it schedulable on resume.
+        source.status = 'queued'; source.pendingReanalysis = true; source.reason = 'interrupted';
+        await this.saveSource(runtime, source); return false;
+      }
+      if (signal.aborted || task.status !== 'running') return false;
       source.status = 'extracting'; source.pendingReanalysis = false; await this.saveSource(runtime, source); return true;
     });
     if (!admitted) return;

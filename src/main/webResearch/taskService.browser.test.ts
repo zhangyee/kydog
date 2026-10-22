@@ -313,6 +313,15 @@ describe('durable browser task scheduling', () => {
 
   it('pauses on a rejected body write and keeps the old evidence available in memory and on disk', async () => {
     let extracted = 0;
+    const successful = await harness({ browser: reader(async (input) => {
+      await input.beforeNavigate(); const document = doc(input.requestedUrl); await input.onDocument(document);
+      const { html: _html, ...facts } = document; return { status: 'readable', document: facts };
+    }) });
+    const extract = successful.deps.extract!;
+    const countedExtract: NonNullable<TaskDeps['extract']> = async (input) => { extracted++; return extract(input); };
+    successful.deps.extract = countedExtract;
+    expect((await successful.run()).status).toBe('completed');
+    expect(extracted).toBe(1);
     const h = await harness({ browser: reader(async (input) => {
       await input.beforeNavigate(); const document = doc(input.requestedUrl); await input.onDocument(document);
       const { html: _html, ...facts } = document; return { status: 'readable', document: facts };
@@ -330,8 +339,7 @@ describe('durable browser task scheduling', () => {
       if (source.retrieval?.method === 'browser') throw failure;
       await save(task, source);
     });
-    const extract = h.deps.extract!;
-    h.deps.extract = async (input) => { extracted++; return extract(input); };
+    h.deps.extract = countedExtract;
     const saved = await h.run();
     expect((await h.service.get(h.task.threadId, h.task.researchRunId)).status).toBe('paused');
     expect(saved).toMatchObject({ status: 'waiting_user', contentHash: 'old-hash' });
@@ -339,7 +347,7 @@ describe('durable browser task scheduling', () => {
     const inspected = await h.service.inspect(h.task.threadId, h.task.researchRunId,
       { view: 'evidence', evidenceIds: ['old-evidence'] });
     expect(inspected.items[0]).toMatchObject({ quote: 'Old grounded body', excerpt: 'Old grounded body' });
-    expect(extracted).toBe(0);
+    expect(extracted).toBe(1);
   });
 
   it('settles other queued browser workers as queued when one exhausts the task DOM budget', async () => {
@@ -450,5 +458,59 @@ describe('durable browser task scheduling', () => {
     expect(saved.browser!.attempts[0]).toMatchObject({ phase: 'interrupted', reason: primary.message });
     expect(calls).toBe(1);
   });
+
+  it.each(['http_fetch', 'http_parse', 'browser_model'] as const)(
+    'settles an accepted body across a concurrent browser budget pause and resumes without refetch: %s', async (stage) => {
+      let entered!: () => void, release!: () => void, paused!: () => void;
+      const atStage = new Promise<void>((resolve) => { entered = resolve; });
+      const continueStage = new Promise<void>((resolve) => { release = resolve; });
+      const taskPaused = new Promise<void>((resolve) => { paused = resolve; });
+      const targetUrl = stage === 'browser_model' ? 'https://www.infoq.cn/article/target' : 'https://http.example/target';
+      const blockerUrl = 'https://www.infoq.cn/article/blocker';
+      const h = await harness({ url: targetUrl, budget: { fetchConcurrency: 2, maxTotalBytes: 1000, maxBytesPerSource: 2000 },
+        deps: { onUpdate: (snapshot) => { if (snapshot.statusReason === 'browser_total_dom_limit') paused(); } },
+        browser: reader(async (input) => {
+          await input.onStarted?.(); await input.beforeNavigate();
+          if (input.requestedUrl === blockerUrl) {
+            await atStage; return { status: 'budget_blocked', reason: 'browser_dom_budget' };
+          }
+          const document = doc(input.requestedUrl); await input.onDocument(document);
+          const { html: _html, ...facts } = document; return { status: 'readable', document: facts };
+        }) });
+      const fetch = h.deps.fetch, parse = h.deps.parse, resolveModel = h.deps.resolveModel, extract = h.deps.extract!;
+      const fetchedIds: string[] = [], extractedIds: string[] = [];
+      h.deps.fetch = async (input) => {
+        fetchedIds.push(input.sourceId);
+        if (input.url !== targetUrl || stage === 'browser_model') return fetch(input);
+        if (stage === 'http_fetch') { entered(); await continueStage; }
+        const bytes = Buffer.from(html); expect(input.budget.reserveBytes(input.sourceId, bytes.length).ok).toBe(true);
+        return { requestedUrl: input.url, finalUrl: input.url, status: 'readable', bytes,
+          receivedBytes: bytes.length, redirectChain: [], contentType: 'text/html' };
+      };
+      h.deps.parse = async (input) => {
+        if (input.sourceId === h.source.sourceId && stage === 'http_parse') { entered(); await continueStage; }
+        return parse(input);
+      };
+      h.deps.resolveModel = async (threadId) => {
+        if (stage === 'browser_model') { entered(); await continueStage; }
+        return resolveModel(threadId);
+      };
+      h.deps.extract = async (input) => { extractedIds.push(input.sourceId); return extract(input); };
+      await h.store.saveSource(h.task, { ...h.source, sourceId: randomUUID(), requestedUrl: blockerUrl });
+      const running = h.run(); await taskPaused; release(); await running;
+      const beforeResume = (await h.store.listSources(h.task)).find((source) => source.sourceId === h.source.sourceId)!;
+      const pausedExtractions = [...extractedIds];
+      expect(beforeResume).toMatchObject({ status: 'queued', pendingReanalysis: true });
+      expect(beforeResume.passages.some((passage) => passage.text.includes('parallel threads'))).toBe(true);
+      const pausedSnapshot = await h.service.get(h.task.threadId, h.task.researchRunId);
+      await h.service.control(h.task.threadId, h.task.researchRunId, 'resume');
+      await h.service.whenIdle(h.task.threadId, h.task.researchRunId);
+      const resumed = (await h.store.listSources(h.task)).find((source) => source.sourceId === h.source.sourceId)!;
+      expect(resumed).toMatchObject({ status: 'completed', contentHash: beforeResume.contentHash, retrieval: beforeResume.retrieval });
+      expect(extractedIds).toEqual([h.source.sourceId]);
+      expect(pausedExtractions).toHaveLength(0);
+      expect(fetchedIds.filter((sourceId) => sourceId === h.source.sourceId)).toHaveLength(1);
+      expect(pausedSnapshot.counts).toMatchObject({ fetching: 0, extracting: 0 });
+    });
 
 });
