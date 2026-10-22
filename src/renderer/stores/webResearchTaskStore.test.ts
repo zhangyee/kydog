@@ -12,6 +12,19 @@ const snapshot: WebResearchTaskSnapshot = { researchRunId: 'task-1', threadId: '
   sites: [{ domain: 'docs.example', sourceCount: 1, processed: 0, iconAvailable: false }] };
 
 describe('webResearchTaskStore', () => {
+  it('normalizes missing browser counters without changing old authoritative counts', () => {
+    useWebResearchTaskStore.getState().upsert({ ...snapshot, researchRunId: 'legacy' });
+    expect(useWebResearchTaskStore.getState().snapshots.legacy).toMatchObject({
+      browserDomBytes: 0, counts: { sources: 1, extracting: 1, processed: 0,
+        browser_queued: 0, browser_reading: 0, waiting_user: 0 },
+    });
+    useWebResearchTaskStore.getState().upsert({ ...snapshot, researchRunId: 'legacy', revision: 3,
+      browserDomBytes: 321, counts: { ...snapshot.counts, browser_queued: 2, browser_reading: 3, waiting_user: 4 } });
+    expect(useWebResearchTaskStore.getState().snapshots.legacy).toMatchObject({
+      browserDomBytes: 321, counts: { browser_queued: 2, browser_reading: 3, waiting_user: 4 },
+    });
+  });
+
   it('ignores an older snapshot arriving after a live revision', () => {
     useWebResearchTaskStore.getState().upsert(snapshot);
     useWebResearchTaskStore.getState().upsert({ ...snapshot, revision: 1,

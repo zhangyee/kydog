@@ -3,6 +3,8 @@ import type { BootstrapState, SettingsFileForRenderer, Thread, UpdateStatus } fr
 import { bootstrap } from './bootstrap';
 import { useSettingsStore } from './stores/settingsStore';
 import { useThreadsStore } from './stores/threadsStore';
+import { DEFAULT_WEB_RESEARCH_TASK_BUDGET, type WebResearchTaskSnapshot } from '../shared/webResearchTask';
+import { useWebResearchTaskStore } from './stores/webResearchTaskStore';
 import { useBrowserStore } from './panels/browser/browserStore';
 import { useUiStore } from './stores/uiStore';
 import { useUpdateStore, shouldShowBanner } from './stores/updateStore';
@@ -466,4 +468,22 @@ it('bootstrap restores persisted experimental preference on each load', async ()
     await bootstrap();
     expect(useSettingsStore.getState().settings?.research.xResearchEnabled).toBe(false);
   } finally { BOOT.settings = original; }
+});
+
+it('forwards complete browser recovery snapshots through the sole taskUpdated subscriber', async () => {
+  useWebResearchTaskStore.setState(useWebResearchTaskStore.getInitialState());
+  await bootstrap();
+  const task: WebResearchTaskSnapshot = { threadId: 'thread-research', researchRunId: 'research-recovery',
+    originalQuestion: 'Q', revision: 7, createdAt: '', updatedAt: '', status: 'running',
+    budget: { ...DEFAULT_WEB_RESEARCH_TASK_BUDGET },
+    usage: { candidates: 4, fetchesDispatched: 2, receivedBytes: 123, modelCalls: 1 },
+    browserDomBytes: 456, counts: { discoveries: 4, sources: 4, queued: 0, fetching: 0,
+      extracting: 0, completed: 1, failed: 1, cancelled: 0, unprocessed: 0, processed: 2,
+      evidenceReady: 1, irrelevant: 0, claims: 1, evidence: 1,
+      browser_queued: 0, browser_reading: 1, waiting_user: 1 }, sites: [] };
+  expect(listeners.get('webResearch.taskUpdated')).toHaveLength(1);
+  fire('webResearch.taskUpdated', task);
+  expect(useWebResearchTaskStore.getState().snapshots['research-recovery']).toEqual(task);
+  fire('webResearch.taskUpdated', { ...task, revision: 6, browserDomBytes: 0 });
+  expect(useWebResearchTaskStore.getState().snapshots['research-recovery']).toEqual(task);
 });
