@@ -9,6 +9,8 @@ import { researchRunStore } from './runStore';
 import { WebResearchTaskService } from './taskService';
 import { webResearchTaskStore } from './taskStore';
 import { broadcaster } from '../ipc/broadcaster';
+import { createBrowserReader } from './browserReader';
+import { browserService } from '../browser/browserService';
 import { BROWSER_PARTITION } from '../browser/partition';
 
 let service: ResearchRunService | undefined;
@@ -29,6 +31,7 @@ export function getWebResearchTaskService(): WebResearchTaskService {
   if (taskService) return taskService;
   taskService = new WebResearchTaskService({
     store: webResearchTaskStore,
+    browserReader: createBrowserReader({ browser: browserService }),
     fetch: (input) => fetchSource(input, {
       resolveProxy: (url) => session.defaultSession.resolveProxy(url),
       getMediumBrowserHeaders: mediumBrowserHeaders,

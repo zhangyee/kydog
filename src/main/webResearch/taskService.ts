@@ -14,7 +14,10 @@ import { TaskStore } from './taskStore';
 import { completeReport, evidencePublicationState, validateReportCitations,
   type ReportValidationError } from './report';
 import { resolveSourceUrls } from './sourceUrl';
-import { buildTaskSnapshot as snapshot } from './taskState';
+import { browserTrigger, buildTaskSnapshot as snapshot } from './taskState';
+import { BrowserDomBudget } from './browserDomBudget';
+import type { BrowserReader, BrowserLeaseUnavailable, ResearchDocumentFacts } from './browserReadTypes';
+import type { BrowserTrigger, BrowserReadAttempt } from '../../shared/webResearchTask';
 
 export type TaskSubmitInput = {
   researchRunId?: string;
@@ -38,6 +41,7 @@ export type TaskCompleteResult =
 
 export type TaskDeps = {
   store: TaskStore;
+  browserReader?: BrowserReader;
   fetch: (input: { url: string; sourceId: string; budget: ResearchBudgetMeter;
     signal: AbortSignal; preReserved: true }) => Promise<FetchResult>;
   fetchIcon?: (url: string, signal: AbortSignal) => Promise<string | undefined>;
@@ -50,7 +54,10 @@ export type TaskDeps = {
 
 type Runtime = { task: WebResearchTaskRecord; sources: Map<string, WebResearchTaskSource>;
   meter: ResearchBudgetMeter; permits: ModelPermitPool; controller: AbortController;
-  work?: Promise<void>; pending: boolean; finalizing?: boolean };
+  work?: Promise<void>; pending: boolean; finalizing?: boolean;
+  persistenceFailures: Set<unknown>; idleError?: unknown;
+  domBudget: BrowserDomBudget; budgetTail: Promise<void>; sourceTails: Map<string, Promise<void>>;
+  browserWork: Map<string, Promise<void>>; browserLeases: Map<string, { attemptId: string; leaseId: string }>; };
 
 const SITE_ICON_CACHE_LIMIT = 64;
 const SITE_ICON_TIMEOUT_MS = 5_000;
@@ -79,13 +86,62 @@ function sorted(sources: Iterable<WebResearchTaskSource>): WebResearchTaskSource
   return [...sources].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.sourceId.localeCompare(b.sourceId));
 }
 
+function sameDocumentFacts(a: ResearchDocumentFacts, b: ResearchDocumentFacts): boolean {
+  return a.url === b.url && a.rootRule === b.rootRule && a.utf8Bytes === b.utf8Bytes &&
+    a.mainStatusCode === b.mainStatusCode && a.documentContentType === b.documentContentType &&
+    a.identity.documentEpoch === b.identity.documentEpoch && a.identity.routeRevision === b.identity.routeRevision &&
+    a.identity.navigationSequence === b.identity.navigationSequence;
+}
+
 /** The agent coordinates research; this service only performs durable source work. */
 export class WebResearchTaskService {
   private readonly active = new Map<string, Runtime>();
   private readonly loading = new Map<string, Promise<Runtime>>();
   private readonly iconCache = new Map<string, string>();
   private readonly iconInflight = new Map<string, Promise<string | undefined>>();
-  constructor(private readonly deps: TaskDeps) {}
+  constructor(private readonly deps: TaskDeps) {
+    deps.browserReader?.onLeaseUnavailable?.((event) => {
+      const runtime = this.active.get(this.key(event.threadId, event.researchRunId));
+      if (runtime) void this.leaseUnavailable(runtime, event).catch((error: unknown) => { runtime.idleError = error; });
+    });
+  }
+  /** Task budget writes and source intents never enclose browser or model awaits. */
+  private taskSerial<T>(runtime: Runtime, action: () => Promise<T>): Promise<T> {
+    const result = runtime.budgetTail.then(action);
+    runtime.budgetTail = result.then(() => {}, () => {});
+    return result;
+  }
+  private sourceSerial<T>(runtime: Runtime, sourceId: string, action: () => Promise<T>): Promise<T> {
+    const result = (runtime.sourceTails.get(sourceId) ?? Promise.resolve()).then(action);
+    const tail = result.then(() => {}, () => {});
+    runtime.sourceTails.set(sourceId, tail);
+    void tail.then(() => { if (runtime.sourceTails.get(sourceId) === tail) runtime.sourceTails.delete(sourceId); });
+    return result;
+  }
+  private source(runtime: Runtime, sourceId: string): WebResearchTaskSource | undefined {
+    return [...runtime.sources.values()].find((source) => source.sourceId === sourceId);
+  }
+  private currentAttempt(runtime: Runtime, sourceId: string, attemptId: string): BrowserReadAttempt | undefined {
+    const source = this.source(runtime, sourceId);
+    const attempt = source?.browser?.attempts.at(-1);
+    return runtime.task.status === 'running' && !runtime.finalizing && !runtime.controller.signal.aborted &&
+      (source?.status === 'browser_queued' || source?.status === 'browser_reading') &&
+      attempt?.attemptId === attemptId ? attempt : undefined;
+  }
+  private async leaseUnavailable(runtime: Runtime, event: BrowserLeaseUnavailable): Promise<void> {
+    await this.sourceSerial(runtime, event.sourceId, async () => {
+      const lease = runtime.browserLeases.get(event.sourceId);
+      const source = this.source(runtime, event.sourceId);
+      const attempt = source?.browser?.attempts.at(-1);
+      if (!lease || lease.leaseId !== event.leaseId || lease.attemptId !== event.attemptId ||
+        attempt?.attemptId !== event.attemptId || !source || runtime.task.status !== 'running' ||
+        !['browser_reading', 'waiting_user'].includes(source.status)) return;
+      source.status = 'waiting_user'; source.reason = event.reason;
+      attempt.phase = 'waiting_user'; attempt.reason = event.reason; attempt.finishedAt = new Date().toISOString();
+      try { await this.saveSource(runtime, source); }
+      catch (error) { await this.storageInterrupted(runtime, source, error); }
+    });
+  }
   private key(threadId: string, researchRunId: string): string { return `${threadId}/${researchRunId}`; }
   private async runtime(threadId: string, researchRunId: string): Promise<Runtime> {
     const key = this.key(threadId, researchRunId);
@@ -118,13 +174,26 @@ export class WebResearchTaskService {
       task.updatedAt = new Date().toISOString();
       await this.deps.store.saveTask(task);
     }
+    const sourceDom = new Map(all.map((source) => [source.sourceId, source.browserDomBytes ?? 0]));
+    const domBudget = new BrowserDomBudget(task.budget, task.browserDomBytes ?? 0, sourceDom);
+    const recoveredDom = Math.max(task.browserDomBytes ?? 0, [...sourceDom.values()].reduce((sum, bytes) => sum + bytes, 0));
+    if (recoveredDom !== (task.browserDomBytes ?? 0)) {
+      task.browserDomBytes = recoveredDom; await this.deps.store.saveTask(task);
+    }
     const runtime: Runtime = { task, sources: new Map(all.map((source) => [candidateKey(source.requestedUrl), source])),
       meter, permits: new ModelPermitPool(task.budget.modelConcurrency), controller: new AbortController(),
-      pending: false };
+      pending: false, persistenceFailures: new Set(), domBudget, budgetTail: Promise.resolve(), sourceTails: new Map(),
+      browserWork: new Map(), browserLeases: new Map() };
     this.active.set(key, runtime);
-    if (task.status === 'running') {
+    if (task.status === 'running' || task.status === 'paused') {
       for (const source of all) {
-        if (source.status === 'fetching' || source.status === 'extracting') {
+        if (source.status === 'browser_reading' || source.status === 'browser_queued' &&
+          source.browser?.attempts.at(-1)?.phase !== 'budget_blocked') {
+          source.status = 'waiting_user'; source.reason = 'interrupted';
+          const attempt = source.browser?.attempts.at(-1);
+          if (attempt) { attempt.phase = 'interrupted'; attempt.reason = 'interrupted'; attempt.finishedAt = new Date().toISOString(); }
+          await this.deps.store.saveSource(task, source);
+        } else if (source.status === 'fetching' || source.status === 'extracting') {
           source.status = 'queued'; source.reason = 'interrupted';
           await this.deps.store.saveSource(task, source);
         }
@@ -133,19 +202,39 @@ export class WebResearchTaskService {
     }
     return runtime;
   }
-  private async changed(runtime: Runtime): Promise<WebResearchTaskSnapshot> {
+  private changed(runtime: Runtime): Promise<WebResearchTaskSnapshot> {
+    return this.taskSerial(runtime, () => this.persistTask(runtime));
+  }
+  private async persistTask(runtime: Runtime): Promise<WebResearchTaskSnapshot> {
     const { task, meter } = runtime;
     task.revision++;
     task.updatedAt = new Date().toISOString();
     task.usage = { ...meter.usage };
-    await this.deps.store.saveTask(task);
+    try { await this.deps.store.saveTask(task); }
+    catch (error) { runtime.persistenceFailures.add(error); throw error; }
     const value = snapshot(task, runtime.sources.values());
     try { this.deps.onUpdate(value); } catch { /* UI observers cannot alter persisted state */ }
     return value;
   }
+  private async persistSource(runtime: Runtime, source: WebResearchTaskSource): Promise<void> {
+    try { await this.deps.store.saveSource(runtime.task, source); }
+    catch (error) { runtime.persistenceFailures.add(error); throw error; }
+  }
+  private async storageInterrupted(runtime: Runtime, source: WebResearchTaskSource, error: unknown): Promise<void> {
+    runtime.task.status = 'paused'; runtime.task.statusReason = 'storage_error';
+    source.status = source.browser ? 'waiting_user' : 'queued';
+    source.reason = 'interrupted';
+    const attempt = source.browser?.attempts.at(-1);
+    if (attempt) {
+      attempt.phase = 'interrupted'; attempt.finishedAt = new Date().toISOString();
+      attempt.reason = error instanceof Error ? error.message : String(error);
+    }
+    try { await this.saveSource(runtime, source); }
+    catch { throw error; } // Never replace the original IO cause with a recovery-write failure.
+  }
   private async saveSource(runtime: Runtime, source: WebResearchTaskSource): Promise<void> {
     source.updatedAt = new Date().toISOString();
-    await this.deps.store.saveSource(runtime.task, source);
+    await this.persistSource(runtime, source);
     await this.changed(runtime);
   }
 
@@ -218,7 +307,8 @@ export class WebResearchTaskService {
       await this.deps.store.createTask(task);
       runtime = { task, sources: new Map(), meter: new ResearchBudgetMeter(budget),
         permits: new ModelPermitPool(budget.modelConcurrency), controller: new AbortController(),
-        pending: false };
+        pending: false, persistenceFailures: new Set(), domBudget: new BrowserDomBudget(budget, 0, new Map()), budgetTail: Promise.resolve(),
+        sourceTails: new Map(), browserWork: new Map(), browserLeases: new Map() };
       this.active.set(this.key(owner.threadId, task.researchRunId), runtime);
       created = true;
     }
@@ -370,9 +460,10 @@ export class WebResearchTaskService {
 
   private kick(runtime: Runtime): void {
     if (runtime.task.status !== 'running') return;
+    this.kickBrowser(runtime);
     if (runtime.work) { runtime.pending = true; return; }
     const tasks = sorted(runtime.sources.values()).filter((source) => source.status === 'queued' ||
-      source.pendingReanalysis);
+      source.pendingReanalysis && (source.status === 'completed' || source.status === 'failed'));
     if (!tasks.length) return;
     const count = Math.min(runtime.task.budget.fetchConcurrency, tasks.length);
     let next = 0;
@@ -384,6 +475,7 @@ export class WebResearchTaskService {
     };
     runtime.work = Promise.all(Array.from({ length: count }, worker)).then(() => undefined)
       .catch(async (error: unknown) => {
+        if (runtime.persistenceFailures.has(error)) { runtime.idleError = error; return; }
         runtime.task.status = 'failed';
         runtime.task.statusReason = error instanceof Error ? error.message : String(error);
         await this.changed(runtime);
@@ -396,6 +488,178 @@ export class WebResearchTaskService {
       });
   }
 
+  private async queueBrowser(runtime: Runtime, source: WebResearchTaskSource, trigger: BrowserTrigger): Promise<void> {
+    await this.sourceSerial(runtime, source.sourceId, async () => {
+      if (!['running', 'paused'].includes(runtime.task.status) || runtime.controller.signal.aborted) return;
+      source.pendingReanalysis = false;
+      if (source.browser?.automaticAttemptUsed || source.retrieval?.method === 'browser') {
+        source.status = 'waiting_user'; source.reason = 'needs_browser';
+      } else {
+        const browser = source.browser ??= { trigger, automaticAttemptUsed: false, attempts: [] };
+        browser.automaticAttemptUsed = true;
+        browser.attempts.push({ attemptId: randomUUID(), sequence: browser.attempts.length + 1,
+          initiatedBy: 'automatic', phase: 'queued', startedAt: new Date().toISOString(),
+          requestedUrl: source.finalUrl ?? source.requestedUrl, navigationMode: 'navigate',
+          navigationReserved: false, domBytes: 0 });
+        source.status = 'browser_queued'; source.reason = undefined;
+      }
+      await this.saveSource(runtime, source);
+    });
+    this.kickBrowser(runtime);
+  }
+
+  private kickBrowser(runtime: Runtime): void {
+    if (runtime.task.status !== 'running' || runtime.controller.signal.aborted) return;
+    for (const source of sorted(runtime.sources.values())) {
+      if (source.status !== 'browser_queued' || runtime.browserWork.has(source.sourceId)) continue;
+      const attempt = source.browser?.attempts.at(-1);
+      if (!attempt || attempt.phase !== 'queued') continue;
+      const work = this.processBrowser(runtime, source, attempt.attemptId).catch(async (error: unknown) => {
+        if (runtime.persistenceFailures.has(error)) { runtime.idleError = error; return; }
+        runtime.task.status = 'failed'; runtime.task.statusReason = error instanceof Error ? error.message : String(error);
+        await this.changed(runtime);
+      }).finally(() => { runtime.browserWork.delete(source.sourceId); });
+      runtime.browserWork.set(source.sourceId, work);
+    }
+  }
+
+  private domLimitReason(runtime: Runtime, source: WebResearchTaskSource): string {
+    return runtime.task.budget.maxBytesPerSource - (source.browserDomBytes ?? 0) <=
+      runtime.task.budget.maxTotalBytes - (runtime.task.browserDomBytes ?? 0)
+      ? 'browser_source_dom_limit' : 'browser_total_dom_limit';
+  }
+
+  private async commitBrowserBody(runtime: Runtime, sourceId: string, attemptId: string,
+    body: BodyResult, facts: ResearchDocumentFacts): Promise<boolean> {
+    return this.sourceSerial(runtime, sourceId, async () => {
+      const attempt = this.currentAttempt(runtime, sourceId, attemptId);
+      const source = this.source(runtime, sourceId);
+      if (!attempt || !source || body.status !== 'readable' || !body.contentHash || !body.passages.length) return false;
+      const replacement: WebResearchTaskSource = { ...source, passages: body.passages, contentHash: body.contentHash,
+        completeness: body.completeness === 'truncated' ? 'truncated' : 'unknown', siteIconUrl: body.siteIconUrl,
+        finalUrl: facts.url, retrieval: { method: 'browser', attemptId }, extraction: undefined,
+        pendingReanalysis: false, status: 'extracting', reason: undefined,
+        updatedAt: new Date().toISOString(), browser: { ...source.browser!, attempts: source.browser!.attempts.map((saved) =>
+          saved.attemptId !== attemptId ? saved : { ...saved, phase: 'readable', finishedAt: new Date().toISOString(),
+            finalUrl: facts.url, mainStatusCode: facts.mainStatusCode, documentContentType: facts.documentContentType, document: facts }) } };
+      // Publish the detached replacement only once the atomic source write succeeded.
+      await this.persistSource(runtime, replacement);
+      Object.assign(source, replacement);
+      await this.changed(runtime);
+      return true;
+    });
+  }
+
+  private async processBrowser(runtime: Runtime, source: WebResearchTaskSource, attemptId: string): Promise<void> {
+    const signal = runtime.controller.signal;
+    let candidate: { body: BodyResult; facts: ResearchDocumentFacts } | undefined;
+    try {
+      const attempt = source.browser!.attempts.at(-1)!;
+      const result = this.deps.browserReader ? await this.deps.browserReader.read({
+        threadId: runtime.task.threadId, researchRunId: runtime.task.researchRunId, sourceId: source.sourceId,
+        attemptId, requestedUrl: attempt.requestedUrl, mode: attempt.navigationMode, signal,
+        onStarted: () => this.sourceSerial(runtime, source.sourceId, async () => {
+          const current = this.currentAttempt(runtime, source.sourceId, attemptId);
+          if (signal.aborted) throw signal.reason;
+          if (!current) throw new Error('attempt_superseded');
+          current.phase = 'reading'; source.status = 'browser_reading'; await this.saveSource(runtime, source);
+        }),
+        beforeNavigate: () => this.sourceSerial(runtime, source.sourceId, () => this.taskSerial(runtime, async () => {
+          const current = this.currentAttempt(runtime, source.sourceId, attemptId);
+          if (signal.aborted) throw signal.reason;
+          if (!current) throw new Error('attempt_superseded');
+          const reservation = runtime.meter.reserveFetch();
+          if (!reservation.ok) throw new Error(reservation.reason);
+          // Task first: a missing source write must never refund the dispatch.
+          await this.persistTask(runtime);
+          current.navigationReserved = true; current.navigationMode = 'navigate';
+          await this.persistSource(runtime, source);
+        })),
+        remainingDomBytes: () => this.sourceSerial(runtime, source.sourceId, async () => {
+          if (signal.aborted) throw signal.reason;
+          if (!this.currentAttempt(runtime, source.sourceId, attemptId)) throw new Error('attempt_superseded');
+          return runtime.domBudget.remaining(source.sourceId);
+        }),
+        onDocument: async (document) => {
+          const admitted = await this.sourceSerial(runtime, source.sourceId, () => this.taskSerial(runtime, async () => {
+            const current = this.currentAttempt(runtime, source.sourceId, attemptId);
+            if (signal.aborted || !current) return false;
+            runtime.domBudget.record(source.sourceId, document.utf8Bytes);
+            source.browserDomBytes = (source.browserDomBytes ?? 0) + document.utf8Bytes;
+            current.domBytes += document.utf8Bytes;
+            // Source first: aggregate recovery takes max(task, sum(sources)).
+            await this.persistSource(runtime, source);
+            runtime.task.browserDomBytes = (runtime.task.browserDomBytes ?? 0) + document.utf8Bytes;
+            await this.persistTask(runtime);
+            return true;
+          }));
+          if (!admitted) return 'continue';
+          const body = await this.deps.parse({ bytes: Buffer.from(document.html, 'utf8'),
+            contentType: 'text/html', finalUrl: document.url, sourceId: source.sourceId });
+          return this.sourceSerial(runtime, source.sourceId, async () => {
+            if (signal.aborted || !this.currentAttempt(runtime, source.sourceId, attemptId) || body.status !== 'readable' ||
+              !body.contentHash || !body.passages.length) return 'continue';
+            const { html: _html, ...facts } = document;
+            candidate = { body, facts }; return 'accepted';
+          });
+        },
+      }) : { status: 'waiting_user' as const, reason: 'browser_unavailable' };
+      if (signal.aborted) throw signal.reason;
+      if (runtime.task.status !== 'running') throw new Error('task_not_running');
+      await this.sourceSerial(runtime, source.sourceId, async () => {
+        if (result.leaseId && this.currentAttempt(runtime, source.sourceId, attemptId)) {
+          runtime.browserLeases.set(source.sourceId, { attemptId, leaseId: result.leaseId });
+        }
+      });
+      if (result.status === 'readable' && candidate &&
+        sameDocumentFacts(candidate.facts, result.document)) {
+        if (await this.commitBrowserBody(runtime, source.sourceId, attemptId, candidate.body, result.document)) {
+          runtime.browserLeases.delete(source.sourceId);
+          await this.deps.browserReader?.release({ threadId: runtime.task.threadId,
+            researchRunId: runtime.task.researchRunId, sourceId: source.sourceId }, { closeOwned: true });
+          await this.extractAcceptedBody(runtime, source);
+        }
+        return;
+      }
+      await this.sourceSerial(runtime, source.sourceId, async () => {
+        const current = this.currentAttempt(runtime, source.sourceId, attemptId);
+        if (!current) return;
+        const reason = result.status === 'budget_blocked' ? this.domLimitReason(runtime, source)
+          : result.status === 'readable' ? 'document_changed' : result.reason;
+        const status = reason === 'browser_source_dom_limit' || reason === 'navigation_download' ||
+          result.status === 'failed' ? 'failed' : result.status === 'budget_blocked' ? 'browser_queued' : 'waiting_user';
+        source.status = status; source.reason = reason;
+        current.phase = status === 'browser_queued' ? 'budget_blocked' : status;
+        current.reason = reason; current.finishedAt = new Date().toISOString();
+        if (result.status !== 'readable') { current.finalUrl = result.finalUrl; current.mainStatusCode = result.mainStatusCode; current.documentContentType = result.documentContentType; }
+        if (status === 'browser_queued') { runtime.task.status = 'paused'; runtime.task.statusReason = reason; }
+        await this.saveSource(runtime, source);
+      });
+    } catch (error) {
+      await this.sourceSerial(runtime, source.sourceId, async () => {
+        const current = source.browser?.attempts.at(-1);
+        if (runtime.persistenceFailures.has(error)) { await this.storageInterrupted(runtime, source, error); return; }
+        if (current?.attemptId !== attemptId) return;
+        if (source.status === 'extracting' && source.retrieval?.attemptId === attemptId) {
+          source.status = signal.aborted ? 'queued' : 'failed'; source.pendingReanalysis = signal.aborted;
+          source.reason = signal.aborted ? 'interrupted' : error instanceof Error ? error.message : 'source_error';
+          await this.saveSource(runtime, source); return;
+        }
+        if (!['browser_queued', 'browser_reading'].includes(source.status)) return;
+        const taskBlocked = runtime.task.status === 'paused' && !signal.aborted;
+        const reason = taskBlocked ? runtime.task.statusReason ?? 'task_paused'
+          : error instanceof Error ? error.message : 'browser_error';
+        const budget = reason === 'fetch_limit' || reason === 'browser_total_dom_limit';
+        source.status = budget ? 'browser_queued' : signal.aborted || taskBlocked ? 'waiting_user' : 'failed';
+        source.reason = signal.aborted ? 'interrupted' : reason;
+        current.phase = budget ? 'budget_blocked' : signal.aborted || taskBlocked ? 'interrupted' : 'failed';
+        current.reason = source.reason; current.finishedAt = new Date().toISOString();
+        if (budget) { runtime.task.status = 'paused'; runtime.task.statusReason = reason; }
+        await this.saveSource(runtime, source);
+      });
+    }
+  }
+
   private async processSource(runtime: Runtime, source: WebResearchTaskSource): Promise<void> {
     const { task, meter } = runtime;
     const signal = runtime.controller.signal;
@@ -404,91 +668,110 @@ export class WebResearchTaskService {
         source.status = 'failed'; source.reason = 'pdf_url_excluded';
         await this.saveSource(runtime, source); return;
       }
-      let passages = source.passages;
-      if (!source.contentHash || !passages.length ||
+      if (!source.contentHash || !source.passages.length ||
         (!source.pendingReanalysis && source.reason !== 'interrupted')) {
-        const reserved = meter.reserveFetch(source.sourceId);
-        if (!reserved.ok) {
-          task.status = 'paused'; task.statusReason = reserved.reason;
-          await this.changed(runtime); return;
-        }
-        // Persist the reservation before dispatch: a crash must not make a sent fetch free.
-        await this.changed(runtime);
-        source.status = 'fetching'; source.reason = undefined;
-        await this.saveSource(runtime, source);
+        const reserved = await this.taskSerial(runtime, async () => {
+          const reservation = meter.reserveFetch(source.sourceId);
+          if (!reservation.ok) { task.status = 'paused'; task.statusReason = reservation.reason; }
+          await this.persistTask(runtime); return reservation;
+        });
+        if (!reserved.ok) return;
+        await this.sourceSerial(runtime, source.sourceId, async () => {
+          source.status = 'fetching'; source.reason = undefined; await this.saveSource(runtime, source);
+        });
         const resolvedUrls = resolveSourceUrls(source.requestedUrl);
         source.contentUrl = resolvedUrls.contentUrl;
         const fetched = await this.deps.fetch({ url: resolvedUrls.contentUrl, sourceId: source.sourceId,
           budget: meter, signal, preReserved: true });
-        await this.changed(runtime);
-        if (signal.aborted) { source.status = 'queued'; await this.saveSource(runtime, source); return; }
-        source.contentFinalUrl = fetched.finalUrl;
-        source.finalUrl = resolvedUrls.contentUrl === resolvedUrls.reportUrl
-          ? fetched.finalUrl : resolvedUrls.reportUrl;
-        source.redirectChain = fetched.redirectChain;
-        source.contentType = fetched.contentType;
-        source.statusCode = fetched.statusCode;
-        source.receivedBytes = fetched.receivedBytes;
-        if (fetched.reason === 'total_byte_limit') {
-          source.status = 'queued'; source.reason = fetched.reason;
-          task.status = 'paused'; task.statusReason = fetched.reason;
-          await this.saveSource(runtime, source); return;
-        }
-        if (fetched.status !== 'readable' || !fetched.finalUrl) {
-          source.status = 'failed'; source.reason = fetched.reason ?? fetched.status;
-          await this.saveSource(runtime, source); return;
-        }
+        const trigger = browserTrigger({ source, fetch: fetched });
+        await this.sourceSerial(runtime, source.sourceId, async () => {
+          source.contentFinalUrl = fetched.finalUrl;
+          source.finalUrl = resolvedUrls.contentUrl === resolvedUrls.reportUrl ? fetched.finalUrl : resolvedUrls.reportUrl;
+          source.redirectChain = fetched.redirectChain; source.contentType = fetched.contentType;
+          source.statusCode = fetched.statusCode; source.receivedBytes = fetched.receivedBytes;
+          if (signal.aborted) { source.status = 'queued'; }
+          else if (fetched.reason === 'total_byte_limit') {
+            source.status = 'queued'; source.reason = fetched.reason; task.status = 'paused'; task.statusReason = fetched.reason;
+          } else if (!trigger && (fetched.status !== 'readable' || !fetched.finalUrl)) {
+            source.status = 'failed'; source.reason = fetched.reason ?? fetched.status;
+          }
+          await this.saveSource(runtime, source);
+        });
+        if (signal.aborted || fetched.reason === 'total_byte_limit') return;
+        if (trigger) { await this.queueBrowser(runtime, source, trigger); return; }
+        if (fetched.status !== 'readable' || !fetched.finalUrl) return;
         const body = await this.deps.parse({ bytes: fetched.bytes, contentType: fetched.contentType,
           finalUrl: fetched.finalUrl, sourceId: source.sourceId });
-        source.passages = body.passages;
-        source.contentHash = body.contentHash;
-        source.completeness = body.completeness;
-        source.siteIconUrl = body.siteIconUrl;
-        passages = body.passages;
-        if (body.status !== 'readable' || !passages.length || !source.contentHash) {
-          source.status = 'failed'; source.reason = body.reason ?? body.status;
-          await this.saveSource(runtime, source); return;
-        }
+        const bodyTrigger = browserTrigger({ source, body });
+        if (bodyTrigger) { await this.queueBrowser(runtime, source, bodyTrigger); return; }
+        await this.sourceSerial(runtime, source.sourceId, async () => {
+          source.passages = body.passages; source.contentHash = body.contentHash; source.completeness = body.completeness;
+          source.siteIconUrl = body.siteIconUrl; source.retrieval = { method: 'http' };
+          if (body.status !== 'readable' || !body.passages.length || !body.contentHash) {
+            source.status = 'failed'; source.reason = body.reason ?? body.status;
+          }
+          await this.saveSource(runtime, source);
+        });
+        if (body.status !== 'readable' || !body.passages.length || !body.contentHash) return;
       }
-      if (signal.aborted) { source.status = 'queued'; await this.saveSource(runtime, source); return; }
-      if (!task.modelSnapshot) {
-        task.modelSnapshot = await this.deps.resolveModel(task.threadId);
-        await this.changed(runtime);
-      }
-      source.status = 'extracting';
-      source.pendingReanalysis = false;
-      await this.saveSource(runtime, source);
-      const discoveryCountAtExtraction = source.discoveries.length;
-      const adapter: ModelAdapter = { currentRevision: () => this.deps.adapter.currentRevision(),
-        complete: async (request) => { await this.changed(runtime); return this.deps.adapter.complete(request); } };
-      const extraction = await (this.deps.extract ?? extractSource)({ sourceId: source.sourceId,
-        question: task.originalQuestion, angles: task.angles, discoveries: source.discoveries as Discovery[],
-        passages, completeness: source.completeness ?? 'unknown', modelSnapshot: task.modelSnapshot,
-        budget: meter, signal, permits: runtime.permits, adapter });
-      if (signal.aborted) {
-        source.status = 'queued'; source.pendingReanalysis = true;
-      } else if (extraction.reason === 'model_call_limit') {
-        source.status = 'queued'; source.pendingReanalysis = true;
-        task.status = 'paused'; task.statusReason = extraction.reason;
-      } else {
-        source.extraction = extraction;
-        source.status = extraction.status === 'claims' || extraction.status === 'irrelevant' ? 'completed' : 'failed';
-        source.reason = extraction.reason;
-        source.pendingReanalysis = source.pendingReanalysis ||
-          source.discoveries.length > discoveryCountAtExtraction;
-      }
-      await this.saveSource(runtime, source);
+      await this.extractAcceptedBody(runtime, source);
     } catch (error) {
-      source.status = signal.aborted ? 'queued' : 'failed';
-      source.reason = signal.aborted ? 'interrupted' :
-        error instanceof Error ? error.message : 'source_error';
-      await this.saveSource(runtime, source);
+      await this.sourceSerial(runtime, source.sourceId, async () => {
+        if (runtime.persistenceFailures.has(error)) { await this.storageInterrupted(runtime, source, error); return; }
+        source.status = signal.aborted ? 'queued' : 'failed';
+        source.reason = signal.aborted ? 'interrupted' : error instanceof Error ? error.message : 'source_error';
+        await this.saveSource(runtime, source);
+      });
     }
+  }
+
+  private async extractAcceptedBody(runtime: Runtime, source: WebResearchTaskSource): Promise<void> {
+    const { task, meter } = runtime, signal = runtime.controller.signal;
+    if (signal.aborted) return;
+    const hash = source.contentHash, retrievalAttempt = source.retrieval?.attemptId;
+    const model = task.modelSnapshot ?? await this.deps.resolveModel(task.threadId);
+    await this.taskSerial(runtime, async () => { task.modelSnapshot ??= model; await this.persistTask(runtime); });
+    const admitted = await this.sourceSerial(runtime, source.sourceId, async () => {
+      if (signal.aborted || task.status !== 'running' || source.contentHash !== hash || source.retrieval?.attemptId !== retrievalAttempt) return false;
+      source.status = 'extracting'; source.pendingReanalysis = false; await this.saveSource(runtime, source); return true;
+    });
+    if (!admitted) return;
+    const discoveryCount = source.discoveries.length;
+    let persistenceFailure: { error: unknown } | undefined;
+    const adapter: ModelAdapter = { currentRevision: () => this.deps.adapter.currentRevision(),
+      complete: async (request) => {
+        try { await this.changed(runtime); }
+        catch (error) { persistenceFailure = { error }; throw error; }
+        return this.deps.adapter.complete(request);
+      } };
+    const extraction = await (this.deps.extract ?? extractSource)({ sourceId: source.sourceId,
+      question: task.originalQuestion, angles: task.angles, discoveries: source.discoveries as Discovery[],
+      passages: source.passages, completeness: source.completeness ?? 'unknown', modelSnapshot: task.modelSnapshot!,
+      budget: meter, signal, permits: runtime.permits, adapter });
+    // extractSource normalizes adapter errors; an owner save failure keeps its original cause.
+    if (persistenceFailure) throw persistenceFailure.error;
+    let trigger: BrowserTrigger | undefined;
+    await this.sourceSerial(runtime, source.sourceId, async () => {
+      if (source.contentHash !== hash || source.retrieval?.attemptId !== retrievalAttempt || source.status !== 'extracting') return;
+      if (signal.aborted) { source.status = 'queued'; source.pendingReanalysis = true; }
+      else if (extraction.reason === 'model_call_limit') {
+        source.status = 'queued'; source.pendingReanalysis = true; task.status = 'paused'; task.statusReason = extraction.reason;
+      } else {
+        source.extraction = extraction; trigger = browserTrigger({ source, extraction });
+        source.status = extraction.status === 'claims' || extraction.status === 'irrelevant' ? 'completed' : 'failed';
+        source.reason = extraction.reason; source.pendingReanalysis ||= source.discoveries.length > discoveryCount;
+      }
+      await this.saveSource(runtime, source);
+    });
+    if (trigger) await this.queueBrowser(runtime, source, trigger);
   }
 
   async whenIdle(threadId: string, researchRunId: string): Promise<void> {
     const runtime = await this.runtime(threadId, researchRunId);
-    while (runtime.work) await runtime.work;
+    while (runtime.work || runtime.browserWork.size || runtime.sourceTails.size) {
+      await Promise.all([runtime.work, ...runtime.browserWork.values(), ...runtime.sourceTails.values()]);
+    }
+    if (runtime.idleError !== undefined) throw runtime.idleError;
   }
 
   async get(threadId: string, researchRunId: string): Promise<WebResearchTaskSnapshot> {
@@ -624,7 +907,7 @@ export class WebResearchTaskService {
     if (action === 'cancel') {
       if (runtime.work) await runtime.work;
       for (const source of runtime.sources.values()) {
-        if (source.status === 'queued') { source.status = 'cancelled'; await this.deps.store.saveSource(runtime.task, source); }
+        if (source.status === 'queued') { source.status = 'cancelled'; await this.persistSource(runtime, source); }
       }
     }
     return this.changed(runtime);
@@ -664,7 +947,7 @@ export class WebResearchTaskService {
         return { completed: false, validationErrors: report.validationErrors, snapshot: current };
       }
       for (const source of queued) { source.status = 'unprocessed'; source.reason = unprocessedReason;
-        await this.deps.store.saveSource(runtime.task, source); }
+        await this.persistSource(runtime, source); }
       runtime.task.reportPath = report.reportPath;
       runtime.task.unprocessedReason = unprocessedReason;
       runtime.task.status = 'completed';

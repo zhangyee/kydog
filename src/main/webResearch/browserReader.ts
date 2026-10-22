@@ -123,6 +123,8 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
         unlock = await acquire(controller.signal);
         checkSignal(controller.signal);
         timer = setTimeout(() => { timedOut = true; controller.abort(new Error('browser_read_timeout')); }, 30_000);
+        if (input.onStarted) await interrupted(owner(input.onStarted), controller.signal);
+        checkSignal(controller.signal);
         lease = input.mode === 'capture_existing' ? current(input) : undefined;
         // A source retry may capture a new same-URL document. A foreign article is
         // retained for its user; creating a new dedicated tab is a new dispatch.
@@ -131,6 +133,7 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
           const opened = await open({ ...input, beforeNavigate: () => owner(input.beforeNavigate) }, controller.signal); lease = leases.get(id)!;
           const outcome = opened.outcome;
           if (outcome.kind === 'ok' || outcome.kind === 'ok_same_document') observedFacts = { finalUrl: outcome.finalUrl, ...(outcome.kind === 'ok' ? { mainStatusCode: outcome.httpStatusCode } : {}) };
+          if (outcome.kind === 'download') return { status: 'failed', reason: 'navigation_download', finalUrl: outcome.url, leaseId: lease.leaseId };
           if (outcome.kind !== 'ok' && outcome.kind !== 'ok_same_document') {
             return waiting(outcome.kind === 'timeout' ? 'browser_read_timeout' : outcome.kind === 'crashed' ? `renderer_crashed:${outcome.reason}` : `navigation_${outcome.kind}`);
           }
@@ -171,10 +174,11 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
               }
               const maxBytes = await interrupted(owner(input.remainingDomBytes), controller.signal);
               const capture = await interrupted(observed.capture(maxBytes), controller.signal);
-              const facts = { finalUrl: location.currentUrl, ...(capture.mainStatusCode === undefined ? {} : { mainStatusCode: capture.mainStatusCode }) };
+              const facts = { finalUrl: location.currentUrl, ...(capture.documentContentType === undefined ? {} : { documentContentType: capture.documentContentType }), ...(capture.mainStatusCode === undefined ? {} : { mainStatusCode: capture.mainStatusCode }) };
               observedFacts = facts;
               if (activeLease.unavailable) return waiting(activeLease.unavailable, facts);
               if (capture.status === 'invalidated') { await interrupted(observed.dispose(), controller.signal); observed = undefined; continue; }
+              if (capture.status === 'unsupported_media') return { status: 'failed', reason: 'unsupported_media', leaseId: activeLease.leaseId, ...facts };
               if (capture.status === 'oversize') return { status: 'budget_blocked', reason: 'browser_dom_budget', leaseId: activeLease.leaseId, ...facts };
               if (capture.status === 'snapshot') {
                 const doc = capture.document;

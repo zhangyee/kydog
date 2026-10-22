@@ -10,13 +10,15 @@ export type BrowserReadInput = BrowserAttemptOwner & {
   signal: AbortSignal;
   /** Reserve and durably save before navigation; a rejection prevents the effect. */
   beforeNavigate: () => Promise<void>;
+  /** Called after acquiring the process-wide automatic read slot. */
+  onStarted?: () => Promise<void>;
   remainingDomBytes: () => Promise<number>;
   onDocument: (doc: ResearchDocumentSnapshot) => Promise<'accepted' | 'continue'>;
 };
 export type BrowserLeaseUnavailable = BrowserSourceKey & { leaseId: string; attemptId: string | null; reason: string };
 export type BrowserReadResult = (
   | { status: 'readable'; document: ResearchDocumentFacts }
-  | { status: 'waiting_user' | 'failed' | 'budget_blocked'; reason: string; finalUrl?: string; mainStatusCode?: number }) & { leaseId?: string };
+  | { status: 'waiting_user' | 'failed' | 'budget_blocked'; reason: string; finalUrl?: string; mainStatusCode?: number; documentContentType?: string }) & { leaseId?: string };
 export interface BrowserReader {
   /** Runtime-only lease events; IDs must never be persisted or exposed over RPC. */
   onLeaseUnavailable?(listener: (event: BrowserLeaseUnavailable) => void): () => void;

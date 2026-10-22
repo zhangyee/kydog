@@ -69,12 +69,16 @@
   if (state.url !== url || request.url !== url) return { status: 'invalidated', reason: 'document_url_changed', revision };
   if (request.op !== 'capture') return { status: 'invalidated', reason: 'unsupported_operation', revision };
   const verificationWidget = Boolean(request.verificationSelector && document.querySelector(request.verificationSelector));
+  const documentContentType = document.contentType;
+  if (documentContentType && !['text/html', 'application/xhtml+xml', 'text/plain'].includes(documentContentType.toLowerCase())) {
+    return { status: 'unsupported_media', revision, url, verificationWidget, documentContentType };
+  }
   const root = state.root.element;
-  if (!root) return { status: 'pending', reason: 'article_root_missing', revision, url, verificationWidget };
+  if (!root) return { status: 'pending', reason: 'article_root_missing', revision, url, verificationWidget, documentContentType };
   const excluded = 'script,style,link,meta,form,input,textarea,select,button,nav,aside,iframe,frame,object,embed,canvas,[role="navigation"],[role="complementary"]';
   // Inspect the live root: cloning detaches it from an editable ancestor. Native
   // editability also preserves explicit contenteditable=false readonly islands.
-  if (root.matches(excluded) || request.verificationSelector && root.matches(request.verificationSelector) || root.isContentEditable === true) return { status: 'pending', reason: 'article_root_excluded', revision, url, verificationWidget };
+  if (root.matches(excluded) || request.verificationSelector && root.matches(request.verificationSelector) || root.isContentEditable === true) return { status: 'pending', reason: 'article_root_excluded', revision, url, verificationWidget, documentContentType };
   const clone = root.cloneNode(true);
   clone.querySelectorAll('*').forEach(node => {
     if (node.matches(excluded) || request.verificationSelector && node.matches(request.verificationSelector) || node.isContentEditable === true) node.remove();
@@ -90,6 +94,6 @@
   container.body.appendChild(container.importNode(clone, true));
   const html = '<!DOCTYPE html>' + container.documentElement.outerHTML;
   const utf8Bytes = new TextEncoder().encode(html).length;
-  if (utf8Bytes > request.maxBytes) return { status: 'oversize', revision, url, verificationWidget, utf8Bytes };
-  return { status: 'snapshot', revision, url, verificationWidget, rootRule: state.root.rule, utf8Bytes, html };
+  if (utf8Bytes > request.maxBytes) return { status: 'oversize', revision, url, verificationWidget, documentContentType, utf8Bytes };
+  return { status: 'snapshot', revision, url, verificationWidget, documentContentType, rootRule: state.root.rule, utf8Bytes, html };
 })

@@ -99,6 +99,8 @@ export type ResearchDocumentFacts = {
   rootRule: string;
   utf8Bytes: number;
   mainStatusCode?: number;
+  /** Native document.contentType from the captured browser document, not an HTTP header. */
+  documentContentType?: string;
 };
 export type BrowserReadAttempt = {
   attemptId: string;
@@ -113,6 +115,8 @@ export type BrowserReadAttempt = {
   navigationMode: 'navigate' | 'capture_existing';
   navigationReserved: boolean;
   mainStatusCode?: number;
+  /** Native document.contentType from the captured browser document, not an HTTP header. */
+  documentContentType?: string;
   reason?: string;
   document?: ResearchDocumentFacts;
   domBytes: number;

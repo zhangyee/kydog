@@ -2,10 +2,11 @@ import { VERIFICATION_WIDGET_SELECTOR } from '../webResearch/verificationWidget'
 import { randomUUID } from 'node:crypto';
 import SOURCE from './injected/researchDocument.js?raw';
 import type { ResearchDocumentSnapshot, ResearchDocumentIdentity } from '../webResearch/browserReadTypes';
-export type ResearchDocumentCapture = { revision: number; mainStatusCode?: number; verificationWidget?: boolean } & (
+export type ResearchDocumentCapture = { revision: number; mainStatusCode?: number; verificationWidget?: boolean; documentContentType?: string } & (
   | { status: 'snapshot'; document: ResearchDocumentSnapshot }
   | { status: 'pending' | 'invalidated'; reason: string }
   | { status: 'oversize'; utf8Bytes: number }
+  | { status: 'unsupported_media' }
 );
 /** An exact native/document identity invalidation during observer setup. */
 export class ResearchDocumentInvalidatedError extends Error {
@@ -130,7 +131,7 @@ export async function observeResearchDocument(port: ResearchDocumentPort, signal
       if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error('research_document_invalid_budget');
       if (!check()) return { status: 'invalidated', reason: invalidated!, revision };
       const captured = await evaluate('capture', { maxBytes, verificationSelector: VERIFICATION_WIDGET_SELECTOR });
-      const facts = { mainStatusCode: initial.mainStatusCode, verificationWidget: captured.verificationWidget === true };
+      const facts = { mainStatusCode: initial.mainStatusCode, verificationWidget: captured.verificationWidget === true, documentContentType: captured.documentContentType };
       if (!check() || captured.url !== undefined && captured.url !== initial.currentUrl) {
         invalidate('document_identity_changed');
         return { status: 'invalidated', reason: invalidated!, revision };
@@ -140,10 +141,11 @@ export async function observeResearchDocument(port: ResearchDocumentPort, signal
       if (captured.status === 'snapshot') {
         return { ...facts, status: 'snapshot', revision: captured.revision, document: {
           url: initial.currentUrl, identity: { documentEpoch: initial.documentEpoch, routeRevision: initial.routeRevision, navigationSequence: initial.navigationSequence },
-          rootRule: captured.rootRule, html: captured.html, utf8Bytes: captured.utf8Bytes,
+          documentContentType: captured.documentContentType, rootRule: captured.rootRule, html: captured.html, utf8Bytes: captured.utf8Bytes,
           ...(initial.mainStatusCode === undefined ? {} : { mainStatusCode: initial.mainStatusCode }),
         } };
       }
+      if (captured.status === 'unsupported_media') return { ...facts, status: 'unsupported_media', revision: captured.revision };
       if (captured.status === 'oversize') return { ...facts, status: 'oversize', revision: captured.revision, utf8Bytes: captured.utf8Bytes };
       if (captured.status === 'pending') return { ...facts, status: 'pending', revision: captured.revision, reason: captured.reason };
       invalidate(captured.reason ?? 'document_invalidated');

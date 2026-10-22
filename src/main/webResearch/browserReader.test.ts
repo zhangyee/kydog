@@ -46,6 +46,45 @@ function fixture() {
 }
 afterEach(() => { vi.useRealTimers(); });
 describe('source browser reader', () => {
+  it('announces actual slot admission before effects and propagates start-save failures', async () => {
+    const f = fixture(), admitted: string[] = [], gate = deferred<'accepted'>();
+    const first = f.reader.read(f.input({ onStarted: async () => { admitted.push('first'); }, onDocument: () => gate.promise }));
+    await flush();
+    const firstAdmission = [...admitted];
+    const second = f.reader.read(f.input({ sourceId: 'second', onStarted: async () => { admitted.push('second'); } }));
+    await flush(); const queuedAdmission = [...admitted];
+    gate.resolve('accepted'); await first; await second;
+    if (admitted.length !== 2) await f.reader.dispose();
+    expect(firstAdmission).toEqual(['first']);
+    expect(queuedAdmission).toEqual(['first']);
+    expect(admitted).toEqual(['first', 'second']);
+    const failure = new Error('cannot save reading');
+    const opens = f.browser.open.mock.calls.length;
+    await expect(f.reader.read(f.input({ sourceId: 'third', onStarted: async () => { throw failure; } }))).rejects.toBe(failure);
+    expect(f.browser.open.mock.calls.length).toBe(opens);
+    await f.reader.read(f.input({ mode: 'capture_existing', onStarted: async () => { admitted.push('capture'); } }));
+    expect(admitted).toEqual(['first', 'second', 'capture']);
+    await f.reader.dispose();
+  });
+  it('classifies native unsupported media and navigation downloads as failed, preserving the actual fact', async () => {
+    vi.useFakeTimers();
+    const f = fixture(), input = f.input();
+    expect((await f.reader.read(input)).status).toBe('readable');
+    f.tabs.get('tab-1')!.capture = async () => ({ status: 'unsupported_media', revision: 1, documentContentType: 'application/pdf', mainStatusCode: 200 });
+    const pdfRead = f.reader.read({ ...input, mode: 'capture_existing', attemptId: 'pdf' });
+    await flush(); await vi.advanceTimersByTimeAsync(30_000);
+    const pdfResult = await pdfRead;
+    if (pdfResult.status !== 'failed') await f.reader.dispose();
+    expect(pdfResult).toMatchObject({
+      status: 'failed', reason: 'unsupported_media', documentContentType: 'application/pdf', mainStatusCode: 200, finalUrl: url,
+    });
+    const open = f.browser.open.getMockImplementation()!;
+    f.browser.open.mockImplementation(async (args) => { const opened = await open(args);
+      return { ...opened, nav: { ...opened.nav, outcome: { kind: 'download', url: args.url + '/download.pdf', mimeType: 'application/pdf', filename: 'download.pdf', cancelled: 'policy' } } } as any;
+    });
+    expect(await f.reader.read(f.input({ sourceId: 'download' }))).toMatchObject({ status: 'failed', reason: 'navigation_download', finalUrl: url + '/download.pdf' });
+    await f.reader.dispose();
+  });
   it('captures a verified page without refreshing it and only reserves new user opens', async () => {
     const f = fixture(), input = f.input();
     expect((await f.reader.read(input)).status).toBe('readable');

@@ -4,8 +4,8 @@ import SOURCE from './injected/researchDocument.js?raw';
 import { observeResearchDocument, type ResearchDocumentPort } from './researchDocument';
 
 const windows: JSDOM[] = [];
-function fixture(html: string, url = 'https://example.org/article') {
-  const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
+function fixture(html: string, url = 'https://example.org/article', contentType = 'text/html') {
+  const dom = new JSDOM(html, { url, runScripts: 'outside-only', contentType });
   windows.push(dom);
   Object.assign(dom.window, { TextEncoder });
   // JSDOM omits this native HTMLElement capability. Model its DOM attribute
@@ -25,6 +25,15 @@ function fixture(html: string, url = 'https://example.org/article') {
 afterEach(() => { for (const dom of windows.splice(0)) { dom.window.__kydogResearchDocument?.observer.disconnect(); dom.window.close(); } });
 
 describe('researchDocument injected capture', () => {
+  it('reports native document media independently of the presence of an article root', () => {
+    const html = fixture('<article><p>Evidence</p></article>');
+    expect(html.run('capture', { maxBytes: 1000 })).toMatchObject({ status: 'snapshot', documentContentType: 'text/html' });
+    const svg = fixture('<svg xmlns="http://www.w3.org/2000/svg"/>', 'https://example.org/image', 'image/svg+xml');
+    expect(svg.document.contentType).toBe('image/svg+xml');
+    expect(svg.run('capture', { maxBytes: 1000 })).toMatchObject({ status: 'unsupported_media', documentContentType: 'image/svg+xml' });
+    Object.defineProperty(html.document, 'contentType', { value: 'application/pdf' });
+    expect(html.run('capture', { maxBytes: 1000 })).toMatchObject({ status: 'unsupported_media', documentContentType: 'application/pdf' });
+  });
   // Choosing body, the InfoQ wrapper, or an input-bearing clone leaks these same-page controls.
   it.each([
     ['https://www.infoq.cn/article/example', '<div class="article-detaile"><aside>outer-sidebar</aside><div class="article-preview">BODY</div></div>', '.article-detaile .article-preview'],
@@ -147,6 +156,14 @@ function bridgeFixture() {
 }
 
 describe('researchDocument trusted lease', () => {
+  it('preserves native media facts through the identity-checked capture bridge', async () => {
+    const f = bridgeFixture(), lease = await f.open();
+    expect(await lease.capture(1000)).toMatchObject({ status: 'snapshot', document: { documentContentType: 'text/html' } });
+    Object.defineProperty(f.document, 'contentType', { value: 'application/pdf' });
+    expect(await lease.capture(1000)).toMatchObject({ status: 'unsupported_media', documentContentType: 'application/pdf', mainStatusCode: 200 });
+    await lease.dispose();
+  });
+
   it.each(['documentEpoch', 'routeRevision', 'navigationSequence', 'currentUrl', 'pageUrl'] as const)(
     'rejects changed %s after a successful same-identity capture', async field => {
       const f = bridgeFixture();
