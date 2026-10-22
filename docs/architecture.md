@@ -77,3 +77,13 @@ service → broadcaster.emit(topic, payload) → EVENT_CHANNEL（广播给所有
 `fs.setWatched` 声明当前窗口缓存的目录和跟随磁盘的文件。`fs.changed` 表示目录列表或所列可见条目的元数据变化，`change` 与 `rename` 都触发重读；隐藏条目仍按 `isListedName` 过滤。`file.changed` 独立表示声明的具体文件被改动，不用目录通知推断文件身份。监听只覆盖声明集合，不递归扫描项目，debounce 只用于合并刷新次数。
 
 主进程已知操作完成后可调用 `FileWatcherService.notifyChanges(paths)`，直接安排既有两类通知，无需等待 OS watch。入口按 exact 路径匹配声明集合、对父目录去重；撤销声明会取消尚未发出的通知，不向未声明目录或文件发送。
+
+## 持久网页研究的浏览器恢复
+
+三条 RPC 沿用 `assertResearchViewer`：只有正在显示所属对话的主窗口可调用。handler 只投影协议列出的字段；任务服务再独立校验 task 的 thread/run 及 source 的实际归属。渲染层不指定浏览器标签、不发送脚本、HTML、cookie 或正文。
+
+- `webResearch.taskOpenSource({threadId,researchRunId,sourceId})`：打开或激活任务持有的来源页，返回 `{tabId,expectedAttemptId,snapshot}`；打开本身不提交证据。
+- `webResearch.taskRetrySource({threadId,researchRunId,sourceId,expectedAttemptId})`：版本必须显式为 `string|null`，缺失或错误类型拒绝；旧版本/重复请求由服务返回当前完整快照，不重复派发。
+- `webResearch.taskControl({threadId,researchRunId,action})`：`action` 仅允许 `pause|resume|cancel`，统一调用任务服务的 `control`，返回完整快照。
+
+`webResearch.taskInspect` 的 `sources` 行在原有来源概要上增加 `expectedAttemptId:string|null`（最新持久尝试 ID，无尝试时为 null），及可选 `tabId:string`（由 reader.currentTab 查询的当前可用运行时标签，无可用标签时省略）。活标签 ID 与 lease ID 不落盘。动作返回的快照继续通过既有 `webResearch.taskUpdated` 全量广播回流；没有新增事件或组件本地订阅。

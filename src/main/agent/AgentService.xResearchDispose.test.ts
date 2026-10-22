@@ -28,7 +28,11 @@ vi.mock('../settings/settingsService', () => ({
   },
   toInstitutionPublic: () => null,
 }));
-vi.mock('../browser/browserService', () => ({ browserService: { endRun: vi.fn() } }));
+vi.mock('../browser/browserService', () => ({ browserService: {
+  onTabDestroyed: () => () => {},
+  onTabUnavailable: () => () => {},
+  endRun: vi.fn(),
+} }));
 vi.mock('../browser/loginFlow', () => ({ loginFlow: { noteFor: () => null } }));
 vi.mock('../x/xResearchBrowser', () => ({ createXResearchBrowser: () => ({}) }));
 vi.mock('../llm/providerRegistry', () => ({

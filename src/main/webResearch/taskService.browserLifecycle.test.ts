@@ -52,6 +52,69 @@ async function harness(status: WebResearchTaskSource['status'] = 'waiting_user',
 }
 
 describe('browser task lifecycle', () => {
+  it('projects the current attempt and live owned tab without persisting runtime IDs', async () => {
+    const h = await harness(); let liveTab: string | undefined = 'runtime-only-tab';
+    h.reader.currentTab = vi.fn(key => { expect(key).toEqual(h.key); return liveTab; });
+    h.reader.read = vi.fn(async () => ({ status: 'waiting_user' as const, reason: 'verification_widget' }));
+    const before = await h.saved();
+    const first = await h.service.inspect(h.key.threadId, h.key.researchRunId, { view: 'sources' });
+    expect(first.items).toHaveLength(1);
+    expect(first.items[0]).toMatchObject({ sourceId: h.key.sourceId, expectedAttemptId: null, tabId: 'runtime-only-tab' });
+    expect(await h.saved()).toEqual(before);
+    await h.service.retrySource({ ...h.key, expectedAttemptId: null }); await h.idle();
+    const firstAttempt = (await h.saved()).browser!.attempts[0].attemptId;
+    const firstVersion = await h.service.inspect(h.key.threadId, h.key.researchRunId, { view: 'sources' });
+    expect(firstVersion.items[0]).toMatchObject({ expectedAttemptId: firstAttempt });
+    await h.service.retrySource({ ...h.key, expectedAttemptId: firstAttempt }); await h.idle();
+    const saved = await h.saved(); expect(saved.browser!.attempts).toHaveLength(2);
+    const expectedAttemptId = saved.browser!.attempts[1].attemptId;
+    const current = await h.service.inspect(h.key.threadId, h.key.researchRunId, { view: 'sources' });
+    expect(current.items[0]).toMatchObject({ expectedAttemptId, tabId: 'runtime-only-tab' });
+    expect(JSON.stringify(current.items[0])).toContain('"tabId"');
+    const persisted = await readFile(path.join(h.root, h.key.threadId, h.key.researchRunId, 'task-sources', `${h.key.sourceId}.json`), 'utf8');
+    expect(persisted).not.toContain('"tabId"');
+    expect(persisted).not.toContain('runtime-only-tab');
+    liveTab = undefined;
+    const closed = await h.service.inspect(h.key.threadId, h.key.researchRunId, { view: 'sources' });
+    expect(closed.items[0]).toMatchObject({ expectedAttemptId });
+    expect(closed.items[0]).not.toHaveProperty('tabId');
+    expect(await h.saved()).toEqual(saved);
+    const restored = new WebResearchTaskService({ ...h.deps, browserReader: undefined });
+    const history = await restored.inspect(h.key.threadId, h.key.researchRunId, { view: 'sources' });
+    expect(history.items[0]).toMatchObject({ expectedAttemptId });
+    expect(history.items[0]).not.toHaveProperty('tabId');
+  });
+
+  it.each(['open', 'retry', 'control'] as const)('independently checks real task/thread/source ownership for %s', async action => {
+    const h = await harness();
+    const foreignTask = { ...h.task, threadId: randomUUID(), researchRunId: randomUUID() };
+    const foreignSource = { ...h.source, sourceId: randomUUID(), requestedUrl: 'https://other.example/foreign' };
+    await h.store.createTask(foreignTask); await h.store.saveSource(foreignTask, foreignSource);
+    const foreignKey = { threadId: foreignTask.threadId, researchRunId: foreignTask.researchRunId, sourceId: foreignSource.sourceId };
+    h.reader.read = vi.fn(async () => ({ status: 'waiting_user' as const, reason: 'verification_widget' }));
+    const invoke = (key: typeof h.key) => action === 'open' ? h.service.openSource(key) :
+      action === 'retry' ? h.service.retrySource({ ...key, expectedAttemptId: null }) :
+        h.service.control(key.threadId, key.researchRunId, 'pause');
+    // Both actual owners work through the real TaskStore/TaskService, before mixed identities are rejected.
+    await invoke(h.key); await invoke(foreignKey);
+    await h.idle(); await h.service.whenIdle(foreignKey.threadId, foreignKey.researchRunId);
+    const ownBefore = await h.saved(), foreignBefore = await h.store.loadSource(foreignTask, foreignSource.sourceId);
+    if (action !== 'control') {
+      expect(action === 'open' ? h.reader.openForUser : h.reader.read).toHaveBeenCalledTimes(2);
+      await expect(invoke({ ...h.key, sourceId: foreignSource.sourceId })).rejects.toThrow('source');
+      await expect(invoke({ ...h.key, sourceId: randomUUID() })).rejects.toThrow('source');
+    }
+    await expect(invoke({ ...h.key, researchRunId: foreignKey.researchRunId })).rejects.toThrow();
+    await expect(invoke({ ...h.key, threadId: foreignKey.threadId })).rejects.toThrow();
+    expect(await h.saved()).toEqual(ownBefore);
+    expect(await h.store.loadSource(foreignTask, foreignSource.sourceId)).toEqual(foreignBefore);
+    if (action !== 'control') expect(action === 'open' ? h.reader.openForUser : h.reader.read).toHaveBeenCalledTimes(2);
+    else {
+      expect((await h.service.get(h.key.threadId, h.key.researchRunId)).status).toBe('paused');
+      expect((await h.service.get(foreignKey.threadId, foreignKey.researchRunId)).status).toBe('paused');
+    }
+  });
+
   it('retries once for a shared expectedAttemptId and rejects a late result', async () => {
     const h = await harness();
     const action = { ...h.key, expectedAttemptId: null };

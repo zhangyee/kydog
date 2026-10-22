@@ -179,6 +179,30 @@ export function registerAllHandlers(): void {
     return getWebResearchTaskService().inspect(args.threadId, args.researchRunId, args);
   });
 
+  registerHandler('webResearch.taskOpenSource', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    return getWebResearchTaskService().openSource({
+      threadId: args.threadId, researchRunId: args.researchRunId, sourceId: args.sourceId,
+    });
+  });
+  registerHandler('webResearch.taskRetrySource', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    if (args.expectedAttemptId !== null && typeof args.expectedAttemptId !== 'string') {
+      throw new Error('expectedAttemptId must be a string or null');
+    }
+    return getWebResearchTaskService().retrySource({
+      threadId: args.threadId, researchRunId: args.researchRunId, sourceId: args.sourceId,
+      expectedAttemptId: args.expectedAttemptId,
+    });
+  });
+  registerHandler('webResearch.taskControl', (args, evt) => {
+    assertResearchViewer(args.threadId, evt.sender);
+    if (args.action !== 'pause' && args.action !== 'resume' && args.action !== 'cancel') {
+      throw new Error('action must be pause, resume or cancel');
+    }
+    return getWebResearchTaskService().control(args.threadId, args.researchRunId, args.action);
+  });
+
   // ── x research 任务 ──
   // 四条都先过同一道可见性闸（`assertResearchViewer`）：研究元数据只给正在看这个对话的主窗口。
   //

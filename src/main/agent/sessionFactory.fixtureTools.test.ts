@@ -37,7 +37,10 @@ const H = vi.hoisted(() => ({
   settings: { ui: { locale: 'zh' }, institution: null as unknown },
 }));
 
-vi.mock('../browser/browserService', () => ({browserService:{}}));
+vi.mock('../browser/browserService', () => ({ browserService: {
+  onTabDestroyed: () => () => {},
+  onTabUnavailable: () => () => {},
+} }));
 
 vi.mock('./browserTools', () => ({
   createBrowserTools: () => { H.builtCount += 1; return H.tools; },

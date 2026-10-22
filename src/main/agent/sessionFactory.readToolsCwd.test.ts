@@ -54,7 +54,10 @@ vi.mock('../settings/settingsService', () => ({
 
 // createBrowserTools 会 import 它们（真的用 electron 的 WebContentsView / safeStorage），
 // 与 sessionFactory.browserTools.test.ts / sessionFactory.sessionCwd.test.ts 同一套替身。
-vi.mock('../browser/browserService', () => ({ browserService: {} }));
+vi.mock('../browser/browserService', () => ({ browserService: {
+  onTabDestroyed: () => () => {},
+  onTabUnavailable: () => () => {},
+} }));
 vi.mock('../browser/loginFlow', () => ({ loginFlow: { noteFor: () => null } }));
 
 const { createSession } = await import('./sessionFactory');

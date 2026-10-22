@@ -78,7 +78,10 @@ vi.mock('../../shared/features', async (importOriginal) => ({
 }));
 
 // createBrowserTools 会 import 它，而它 import 的是 electron 的 WebContentsView / session。
-vi.mock('../browser/browserService', () => ({ browserService: {} }));
+vi.mock('../browser/browserService', () => ({ browserService: {
+  onTabDestroyed: () => () => {},
+  onTabUnavailable: () => () => {},
+} }));
 // 同理：loginFlow 的单例要 webRequestHub（electron session）与 institutionService（safeStorage）。
 vi.mock('../browser/loginFlow', () => ({ loginFlow: { noteFor: () => null } }));
 

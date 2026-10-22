@@ -18,6 +18,8 @@ import type { ResearchBudget, ResearchUsage, ResearchRunIndex, ResearchTaskStatu
 import type { WebResearchTaskSnapshot } from './webResearchTask';
 import type { XResearchTaskSnapshot } from './xResearchTask';
 
+type BrowserSourceKey = { threadId: string; researchRunId: string; sourceId: string };
+
 export type RpcCall =
   | { method: 'app.bootstrap'; args: undefined; result: BootstrapState }
   // 回的是 SettingsFileForRenderer 而不是 SettingsFile：整份 SettingsFile 里有
@@ -110,6 +112,13 @@ export type RpcCall =
       view: 'overview' | 'sources' | 'claims' | 'evidence'; cursor?: string; pageSize?: number;
       angleId?: string; status?: import('./webResearchTask').WebResearchSourceState;
       evidenceIds?: string[] }; result: { snapshot: WebResearchTaskSnapshot; items: unknown[]; nextCursor?: string } }
+  // Browser recovery accepts source identity only; live tab/lease authority stays in main.
+  | { method: 'webResearch.taskOpenSource'; args: BrowserSourceKey;
+      result: { tabId: string; expectedAttemptId: string | null; snapshot: WebResearchTaskSnapshot } }
+  | { method: 'webResearch.taskRetrySource'; args: BrowserSourceKey & { expectedAttemptId: string | null };
+      result: WebResearchTaskSnapshot }
+  | { method: 'webResearch.taskControl'; args: { threadId: string; researchRunId: string; action: 'pause' | 'resume' | 'cancel' };
+      result: WebResearchTaskSnapshot }
   // ── x research 任务（spec §4.2、§5.3）──
   // 与上面 webResearch.task* 同形：卡片的数据源是快照，`inspect` 是它背后那批记录的另一种切法。
   // 四条都只读协议上写明的字段（`inspect` 显式投影 view/cursor/pageSize，不把 args 整个递下去）。
@@ -297,6 +306,9 @@ export const RPC_METHODS = [
   'webResearch.taskGet',
   'webResearch.taskSiteIcon',
   'webResearch.taskInspect',
+  'webResearch.taskOpenSource',
+  'webResearch.taskRetrySource',
+  'webResearch.taskControl',
   'xResearch.taskList',
   'xResearch.taskGet',
   'xResearch.taskInspect',

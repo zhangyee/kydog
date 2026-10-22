@@ -33,7 +33,10 @@ vi.mock('../settings/settingsService', () => ({
   settingsService: { get: async () => ({ ui: { locale: 'zh' }, institution: null }) },
   toInstitutionPublic: () => null,
 }));
-vi.mock('../browser/browserService', () => ({ browserService: {} }));
+vi.mock('../browser/browserService', () => ({ browserService: {
+  onTabDestroyed: () => () => {},
+  onTabUnavailable: () => () => {},
+} }));
 vi.mock('../browser/loginFlow', () => ({ loginFlow: { noteFor: () => null } }));
 
 const { createSession } = await import('./sessionFactory');

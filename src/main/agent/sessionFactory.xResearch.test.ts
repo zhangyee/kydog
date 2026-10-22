@@ -24,7 +24,10 @@ vi.mock('../persist/paths', async importOriginal => ({
   X_RESEARCH_DIR: H.taskDir,
 }));
 vi.mock('../settings/settingsService',()=>({settingsService:{get:async()=>({ui:{locale:'en'},institution:null,research:{xResearchEnabled:H.enabled}})},toInstitutionPublic:()=>null}));
-vi.mock('../browser/browserService',()=>({browserService:{}}));
+vi.mock('../browser/browserService', () => ({ browserService: {
+  onTabDestroyed: () => () => {},
+  onTabUnavailable: () => () => {},
+} }));
 vi.mock('../browser/loginFlow',()=>({loginFlow:{noteFor:()=>null}}));
 vi.mock('../x/xResearchBrowser',()=>({createXResearchBrowser:()=>H.port}));
 vi.mock('../llm/providerRegistry',()=>({getProviderRegistry:()=>({modelRuntime:{getModel:()=>({id:'test'})}})}));

@@ -33,6 +33,7 @@ const h = vi.hoisted(() => ({
   windowCloseCalls: 0,
   viewState: null as null | { threadId: string | null; activeTab: 'thread' | 'file' },
   researchCalls: [] as Array<{ method: string; args: string[] }>,
+  taskService: { openSource: vi.fn(), retrySource: vi.fn(), control: vi.fn() },
 }));
 
 vi.mock('electron', () => ({
@@ -101,6 +102,7 @@ vi.mock('./harness/manifest', () => ({
   discardCorruptManifest: async () => {},
 }));
 vi.mock('./ui/viewState', () => ({ viewStateStore: { get: () => h.viewState, set: () => {} } }));
+vi.mock('./webResearch/service', () => ({ getWebResearchTaskService: () => h.taskService }));
 vi.mock('./webResearch/runStore', () => ({ researchRunStore: {
   listRuns: async (threadId: string) => {
     h.researchCalls.push({ method: 'list', args: [threadId] });
@@ -211,6 +213,7 @@ beforeEach(() => {
   h.windowCloseCalls = 0;
   h.viewState = null;
   h.researchCalls = [];
+  for (const method of Object.values(h.taskService)) method.mockReset();
   registerAllHandlers();
 });
 
@@ -245,6 +248,66 @@ describe('web research read RPC ownership', () => {
       { threadId: 'thread-b', researchRunId: 'research-a', evidenceId: 'evidence-a' },
       { sender: h.windowSender }))).rejects.toMatchObject({ code: 'research.not_found' });
     expect(h.researchCalls.map((entry) => entry.method)).toEqual(['get', 'source']);
+  });
+});
+
+describe('web research browser recovery RPC', () => {
+  const key = { threadId: 'thread-a', researchRunId: 'research-b', sourceId: 'source-c' };
+  const forged = { tabId: 'foreign-tab', html: '<script>secret</script>', javascript: 'steal()', cookies: 'secret', body: 'raw' };
+  const asMain = (method: RpcMethod, args: unknown) => Promise.resolve().then(() => call(method, args, { sender: h.windowSender }));
+  const asForeign = (method: RpcMethod, args: unknown) => Promise.resolve().then(() => call(method, args, { sender: { id: 'hidden' } }));
+
+  it.each(['taskOpenSource', 'taskRetrySource', 'taskControl'] as const)('guards %s with the actual main-window/current-thread check', async name => {
+    h.viewState = { threadId: key.threadId, activeTab: 'thread' };
+    const method = `webResearch.${name}` as RpcMethod;
+    const args = name === 'taskRetrySource' ? { ...key, expectedAttemptId: null } :
+      name === 'taskControl' ? { threadId: key.threadId, researchRunId: key.researchRunId, action: 'pause' } : key;
+    const target = name === 'taskRetrySource' ? h.taskService.retrySource : name === 'taskControl' ? h.taskService.control : h.taskService.openSource;
+    target.mockResolvedValue({ result: name });
+    expect(await asMain(method, args)).toEqual({ result: name });
+    expect(target).toHaveBeenCalledTimes(1);
+    await expect(asForeign(method, args)).rejects.toMatchObject({ code: 'research.not_found' });
+    await expect(asMain(method, { ...args, threadId: 'thread-elsewhere' })).rejects.toMatchObject({ code: 'research.not_found' });
+    h.viewState = { threadId: key.threadId, activeTab: 'file' };
+    await expect(asMain(method, args)).rejects.toMatchObject({ code: 'research.not_found' });
+    h.viewState = null;
+    await expect(asMain(method, args)).rejects.toMatchObject({ code: 'research.not_found' });
+    expect(target).toHaveBeenCalledTimes(1);
+  });
+
+  it('projects only the source key and preserves open result', async () => {
+    h.viewState = { threadId: key.threadId, activeTab: 'thread' };
+    const result = { tabId: 'owned-tab', expectedAttemptId: 'attempt-z', snapshot: { revision: 7 } };
+    h.taskService.openSource.mockResolvedValue(result);
+    expect(await asMain('webResearch.taskOpenSource' as RpcMethod, { ...key, ...forged })).toBe(result);
+    expect(h.taskService.openSource).toHaveBeenCalledTimes(1);
+    expect(h.taskService.openSource).toHaveBeenCalledWith(key);
+  });
+
+  it('projects explicit string/null expected versions and rejects missing or malformed versions', async () => {
+    h.viewState = { threadId: key.threadId, activeTab: 'thread' };
+    h.taskService.retrySource.mockResolvedValue({ revision: 8 });
+    for (const expectedAttemptId of [null, 'attempt-z']) {
+      expect(await asMain('webResearch.taskRetrySource' as RpcMethod, { ...key, ...forged, expectedAttemptId })).toEqual({ revision: 8 });
+      expect(h.taskService.retrySource).toHaveBeenLastCalledWith({ ...key, expectedAttemptId });
+    }
+    for (const extra of [{}, { expectedAttemptId: undefined }, { expectedAttemptId: 1 }, { expectedAttemptId: {} }, { expectedAttemptId: false }]) {
+      await expect(asMain('webResearch.taskRetrySource' as RpcMethod, { ...key, ...extra })).rejects.toThrow();
+    }
+    expect(h.taskService.retrySource).toHaveBeenCalledTimes(2);
+  });
+
+  it('projects each allowed action through control and rejects other actions', async () => {
+    h.viewState = { threadId: key.threadId, activeTab: 'thread' };
+    h.taskService.control.mockResolvedValue({ revision: 9 });
+    for (const action of ['pause', 'resume', 'cancel']) {
+      expect(await asMain('webResearch.taskControl' as RpcMethod, { ...key, ...forged, action })).toEqual({ revision: 9 });
+      expect(h.taskService.control).toHaveBeenLastCalledWith(key.threadId, key.researchRunId, action);
+    }
+    for (const action of [undefined, null, 'retry', '', 1, {}]) {
+      await expect(asMain('webResearch.taskControl' as RpcMethod, { ...key, action })).rejects.toThrow();
+    }
+    expect(h.taskService.control).toHaveBeenCalledTimes(3);
   });
 });
 

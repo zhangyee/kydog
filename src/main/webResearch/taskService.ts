@@ -917,12 +917,17 @@ export class WebResearchTaskService {
       (!input.angleId || source.discoveries.some((d) => d.angleId === input.angleId)));
     let items: unknown[];
     if (input.view === 'sources') {
-      items = sources.map((source) => ({ sourceId: source.sourceId, requestedUrl: source.requestedUrl,
-        contentUrl: source.contentUrl, contentFinalUrl: source.contentFinalUrl,
-        finalUrl: source.finalUrl, status: source.status, reason: source.reason,
-        discoveryCount: source.discoveries.length, discoveryPreview: source.discoveries.slice(0, 3),
-        claimCount: source.extraction?.claims.length ?? 0,
-        evidenceCount: source.extraction?.evidence.length ?? 0 }));
+      items = sources.map((source) => {
+        const tabId = this.deps.browserReader?.currentTab(this.sourceKey(runtime, source.sourceId));
+        return { sourceId: source.sourceId, requestedUrl: source.requestedUrl,
+          contentUrl: source.contentUrl, contentFinalUrl: source.contentFinalUrl,
+          finalUrl: source.finalUrl, status: source.status, reason: source.reason,
+          discoveryCount: source.discoveries.length, discoveryPreview: source.discoveries.slice(0, 3),
+          claimCount: source.extraction?.claims.length ?? 0,
+          evidenceCount: source.extraction?.evidence.length ?? 0,
+          expectedAttemptId: source.browser?.attempts.at(-1)?.attemptId ?? null,
+          ...(tabId ? { tabId } : {}) };
+      });
     } else if (input.view === 'claims') {
       items = sources.flatMap((source) => (source.extraction?.claims ?? [])
         .filter((claim) => !input.angleId || claim.relevantAngleIds.includes(input.angleId))
