@@ -214,16 +214,21 @@ export class WebResearchTaskService {
     }
     return runtime;
   }
-  private changed(runtime: Runtime): Promise<WebResearchTaskSnapshot> {
-    return this.taskSerial(runtime, () => this.persistTask(runtime));
+  private changed(runtime: Runtime, assertCurrent?: () => void, replacement?: WebResearchTaskRecord): Promise<WebResearchTaskSnapshot> {
+    return this.taskSerial(runtime, () => this.persistTask(runtime, assertCurrent, replacement));
   }
-  private async persistTask(runtime: Runtime): Promise<WebResearchTaskSnapshot> {
-    const { task, meter } = runtime;
-    task.revision++;
+  private async persistTask(runtime: Runtime, assertCurrent?: () => void, replacement?: WebResearchTaskRecord): Promise<WebResearchTaskSnapshot> {
+    assertCurrent?.();
+    const { meter } = runtime;
+    // Replacement state stays detached until its storage receipt still has an owner.
+    const task = replacement ? { ...replacement } : runtime.task;
+    task.revision = runtime.task.revision + 1;
     task.updatedAt = new Date().toISOString();
     task.usage = { ...meter.usage };
     try { await this.deps.store.saveTask(task); }
     catch (error) { runtime.persistenceFailures.add(error); throw error; }
+    assertCurrent?.();
+    if (replacement) Object.assign(runtime.task, task);
     const value = snapshot(task, runtime.sources.values());
     try { this.deps.onUpdate(value); } catch { /* UI observers cannot alter persisted state */ }
     return value;
@@ -802,17 +807,23 @@ export class WebResearchTaskService {
     if (persistenceFailure) throw persistenceFailure.error;
     let trigger: BrowserTrigger | undefined;
     await this.sourceSerial(runtime, source.sourceId, async () => {
-      if (signal.aborted || runtime.revoked) return;
-      if (source.contentHash !== hash || source.retrieval?.attemptId !== retrievalAttempt || source.status !== 'extracting') return;
-      if (signal.aborted) { source.status = 'queued'; source.pendingReanalysis = true; }
-      else if (extraction.reason === 'model_call_limit') {
-        source.status = 'queued'; source.pendingReanalysis = true; task.status = 'paused'; task.statusReason = extraction.reason;
+      const ownsBody = () => !signal.aborted && !runtime.revoked &&
+        source.contentHash === hash && source.retrieval?.attemptId === retrievalAttempt;
+      if (!ownsBody() || source.status !== 'extracting') return;
+      const replacement: WebResearchTaskSource = { ...source, updatedAt: new Date().toISOString() };
+      if (extraction.reason === 'model_call_limit') {
+        replacement.status = 'queued'; replacement.pendingReanalysis = true;
       } else {
-        source.extraction = extraction; trigger = browserTrigger({ source, extraction });
-        source.status = extraction.status === 'claims' || extraction.status === 'irrelevant' ? 'completed' : 'failed';
-        source.reason = extraction.reason; source.pendingReanalysis ||= source.discoveries.length > discoveryCount;
+        replacement.extraction = extraction;
+        replacement.status = extraction.status === 'claims' || extraction.status === 'irrelevant' ? 'completed' : 'failed';
+        replacement.reason = extraction.reason; replacement.pendingReanalysis ||= source.discoveries.length > discoveryCount;
       }
-      await this.saveSource(runtime, source);
+      await this.persistSource(runtime, replacement);
+      if (!ownsBody() || source.status !== 'extracting') return;
+      Object.assign(source, replacement);
+      if (extraction.reason === 'model_call_limit') { task.status = 'paused'; task.statusReason = extraction.reason; }
+      else trigger = browserTrigger({ source, extraction });
+      await this.changed(runtime, () => { if (!ownsBody()) throw new Error('attempt_superseded'); });
     });
     if (trigger) await this.queueBrowser(runtime, source, trigger);
   }
@@ -976,7 +987,9 @@ export class WebResearchTaskService {
         } else if (source.status === 'fetching' || source.status === 'extracting') {
           source.pendingReanalysis = Boolean(source.contentHash && source.passages.length);
           source.status = 'queued'; source.reason = 'interrupted';
-        } else return;
+        } else if (!runtime.revoked) return;
+        // Teardown also restores unchanged queued/waiting records: a detached,
+        // rejected finalization write may have reached disk before revocation.
         const attempt = source.browser?.attempts.at(-1);
         if (attempt && (cancelled || source.reason === 'interrupted')) {
           attempt.phase = cancelled ? 'cancelled' : 'interrupted';
@@ -1178,13 +1191,19 @@ export class WebResearchTaskService {
         if (previousStatus === 'running') this.kick(runtime);
         return { completed: false, validationErrors: report.validationErrors, snapshot: current };
       }
-      for (const source of queued) { source.status = 'unprocessed'; source.reason = unprocessedReason;
-        await this.persistSource(runtime, source); }
-      runtime.task.reportPath = report.reportPath;
-      runtime.task.unprocessedReason = unprocessedReason;
-      runtime.task.status = 'completed';
-      runtime.task.statusReason = undefined;
-      const current = await this.changed(runtime);
+      const assertCurrent = () => this.assertAvailable(runtime.task.threadId);
+      for (const source of queued) await this.sourceSerial(runtime, source.sourceId, async () => {
+        assertCurrent();
+        const replacement: WebResearchTaskSource = { ...source, status: 'unprocessed', reason: unprocessedReason };
+        await this.persistSource(runtime, replacement);
+        assertCurrent();
+        Object.assign(source, replacement);
+      });
+      assertCurrent();
+      const completed: WebResearchTaskRecord = { ...runtime.task, reportPath: report.reportPath,
+        unprocessedReason, status: 'completed', statusReason: undefined };
+      const current = await this.changed(runtime, assertCurrent, completed);
+      assertCurrent();
       return { completed: true, reportPath: report.reportPath, snapshot: current };
     } catch (error) {
       if (runtime.revoked) throw error;

@@ -336,4 +336,52 @@ describe('browser task lifecycle', () => {
     expect(await readdir(h.root)).toEqual([]);
   });
 
+  it.each(['shutdown', 'dispose'] as const)('rejects a completed model-source write receipt after %s', async action => {
+    const good = await harness(); await good.service.retrySource({ ...good.key, expectedAttemptId: null }); await good.idle();
+    expect((await good.saved()).status).toBe('completed');
+    expect((await good.saved()).extraction!.evidence[0].quote).toBe('Parallel threads');
+    const h = await harness(); const entered = deferred(), gate = deferred();
+    const updates: string[] = []; h.deps.onUpdate = value => { updates.push(`${value.status}:${value.counts.completed}`); };
+    const save = h.store.saveSource.bind(h.store);
+    vi.spyOn(h.store, 'saveSource').mockImplementation(async (task, source) => {
+      if (source.status === 'completed') { entered.resolve(); await gate.promise; }
+      return save(task, source);
+    });
+    await h.service.retrySource({ ...h.key, expectedAttemptId: null }); await entered.promise;
+    const before = updates.length;
+    const stopping = action === 'shutdown' ? h.service.shutdown() : h.service.disposeThread(h.key.threadId);
+    gate.resolve(); await stopping;
+    expect(updates.slice(before)).toEqual([action === 'shutdown' ? 'paused:0' : 'cancelled:0']);
+    expect(await h.saved()).toMatchObject({ status: action === 'shutdown' ? 'queued' : 'cancelled' });
+    expect((await h.saved()).extraction).toBeUndefined();
+  });
+
+  it.each(['source', 'task'] as const)('rejects report completion across a held final %s write after publication', async held => {
+    const good = await harness();
+    expect((await good.service.complete(good.key.threadId, good.key.researchRunId, 'Deferred', undefined, 'Deferred')).completed).toBe(true);
+    expect((await good.store.loadTask(good.key.threadId, good.key.researchRunId)).status).toBe('completed');
+    const h = await harness(); const entered = deferred(), gate = deferred();
+    const updates: string[] = []; h.deps.onUpdate = value => { updates.push(value.status); };
+    const saveSource = h.store.saveSource.bind(h.store), saveTask = h.store.saveTask.bind(h.store);
+    vi.spyOn(h.store, 'saveSource').mockImplementation(async (task, source) => {
+      if (held === 'source' && source.status === 'unprocessed') { entered.resolve(); await gate.promise; }
+      return saveSource(task, source);
+    });
+    vi.spyOn(h.store, 'saveTask').mockImplementation(async task => {
+      if (held === 'task' && task.status === 'completed') { entered.resolve(); await gate.promise; }
+      return saveTask(task);
+    });
+    const completing = h.service.complete(h.key.threadId, h.key.researchRunId, 'Deferred', undefined, 'Deferred');
+    await entered.promise;
+    const reports = (await readdir(h.root)).filter(name => name.endsWith('.md'));
+    expect(reports).toHaveLength(1); expect(await readFile(path.join(h.root, reports[0]), 'utf8')).toBe('Deferred');
+    const before = updates.length, shutdown = h.service.shutdown();
+    const rejected = expect(completing).rejects.toThrow('disposed'); gate.resolve();
+    await shutdown; await rejected;
+    expect(updates.slice(before)).toEqual(['paused']);
+    expect((await h.store.loadTask(h.key.threadId, h.key.researchRunId)).status).toBe('paused');
+    expect((await h.saved()).status).toBe(held === 'source' ? 'waiting_user' : 'unprocessed');
+    expect(await readFile(path.join(h.root, reports[0]), 'utf8')).toBe('Deferred');
+  });
+
 });
