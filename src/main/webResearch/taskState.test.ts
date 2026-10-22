@@ -54,6 +54,7 @@ describe('browserTrigger', () => {
     ] as const) {
       expect(browserTrigger({ source, fetch: { ...csdn521, status, reason, statusCode: undefined } })).toBeUndefined();
     }
+    expect(browserTrigger({ source, body })).toBe('body_needs_browser');
     expect(browserTrigger({ source, body: { ...body, status: 'unsupported_media' } })).toBeUndefined();
   });
 
