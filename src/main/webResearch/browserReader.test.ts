@@ -3,6 +3,8 @@ import type { BrowserService } from '../browser/browserService';
 import { ResearchDocumentInvalidatedError, type ResearchDocumentCapture } from '../browser/researchDocument';
 import type { BrowserReadInput, ResearchDocumentSnapshot } from './browserReadTypes';
 import { createBrowserReader } from './browserReader';
+import { KydogError } from '../../shared/errors';
+import { checkUrl } from '../browser/urlGuard';
 
 const url = 'https://article.example/a';
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
@@ -504,4 +506,104 @@ it('closes an owned receipt when release runs between its receipt reaction and l
     expect(f.browser.activate).toHaveBeenCalledTimes(2);
     await f.reader.dispose();
   }
+});
+
+it.each(['browser.too_many_tabs', 'browser.not_dispatchable', 'browser.page_no_result'] as const)(
+  'retains the native temporary failure %s and permits explicit recovery', async code => {
+    const f = fixture(), a = f.input();
+    try {
+      expect((await f.reader.read(a)).status).toBe('readable');
+      const failure = new KydogError(code, 'native diagnostic independent of classification');
+      if (code === 'browser.too_many_tabs') f.browser.open.mockRejectedValueOnce(failure);
+      else f.browser.observeResearchDocument.mockRejectedValueOnce(failure);
+      expect(await f.reader.read({ ...a, attemptId: 'temporary', mode: code === 'browser.too_many_tabs' ? 'navigate' : 'capture_existing' }))
+        .toMatchObject({ status: 'waiting_user', reason: code });
+      expect((await f.reader.read({ ...a, attemptId: 'explicit-recovery', mode: 'capture_existing' })).status).toBe('readable');
+      // These identical native errors originate in owner callbacks, not the browser.
+      for (const callback of ['onStarted', 'beforeNavigate', 'remainingDomBytes', 'onDocument'] as const) {
+        await expect(f.reader.read({ ...a, [callback]: async () => { throw failure; } })).rejects.toBe(failure);
+      }
+      const lookalike = new Error(code);
+      f.browser.open.mockRejectedValueOnce(lookalike);
+      await expect(f.reader.read(a)).rejects.toBe(lookalike);
+      const unsafe = new KydogError('browser.bad_url', 'private target rejected');
+      f.browser.open.mockRejectedValueOnce(unsafe);
+      await expect(f.reader.read(a)).rejects.toBe(unsafe);
+    } finally { await f.reader.dispose(); }
+  });
+
+it.each([
+  { kept: false, pending: false }, { kept: true, pending: false },
+  { kept: false, pending: true }, { kept: true, pending: true },
+])('opens a fresh source while preserving foreign navigation $pending on a kept tab $kept', async ({ kept, pending }) => {
+  const f = fixture(), a = f.input(), verifiedUrl = 'https://article.example/verified', foreignUrl = 'https://article.example/a/other';
+  try {
+    const nativeOpen = f.browser.open.getMockImplementation()!;
+    f.browser.researchNavigationUrls = () => [url, verifiedUrl];
+    f.browser.open.mockImplementationOnce(async args => {
+      const opened = await nativeOpen(args);
+      f.tabs.get(opened.tabId)!.url = verifiedUrl;
+      opened.nav.outcome.finalUrl = verifiedUrl;
+      return opened;
+    });
+    expect((await f.reader.read(a)).status).toBe('readable');
+    if (kept) f.browser.keep('tab-1');
+    expect(await f.reader.openForUser(a)).toMatchObject({ tabId: 'tab-1' });
+    expect(f.browser.activate).toHaveBeenLastCalledWith('tab-1');
+    expect(f.browser.open).toHaveBeenCalledTimes(1);
+    expect(a.beforeNavigate).toHaveBeenCalledTimes(1);
+    const oldTab = f.tabs.get('tab-1')!;
+    if (pending) {
+      oldTab.navigationEvent = 'did-start-navigation'; oldTab.navigationType = 'cross_document';
+      oldTab.navigationUrl = foreignUrl; oldTab.sequence++;
+    } else oldTab.url = foreignUrl;
+    const oldDocument = { ...oldTab, owner: null };
+    const reservation = deferred<void>(), beforeNavigate = vi.fn(() => reservation.promise);
+    const opening = f.reader.openForUser({ ...a, beforeNavigate });
+    await flush();
+    const reservationsBeforeReceipt = beforeNavigate.mock.calls.length;
+    const opensBeforeReceipt = f.browser.open.mock.calls.length;
+    reservation.resolve();
+    const opened = await opening;
+    expect(reservationsBeforeReceipt).toBe(1);
+    expect(opensBeforeReceipt).toBe(1);
+    expect(opened.tabId).toBe('tab-2');
+    expect(f.browser.activate).toHaveBeenLastCalledWith('tab-2');
+    expect(f.browser.open).toHaveBeenCalledTimes(2);
+    expect(f.tabs.get('tab-1')).toEqual(oldDocument);
+    expect(f.tabs.get('tab-2')!.url).toBe(url);
+    expect(f.tabs.get('tab-2')!.owner).toBe(a.threadId);
+    expect(f.reader.currentTab(a)).toBe('tab-2');
+    await f.reader.release(a, { closeOwned: true });
+    expect(f.tabs.has('tab-2')).toBe(false);
+    expect(f.tabs.get('tab-1')).toEqual(oldDocument);
+  } finally { await f.reader.dispose(); }
+});
+
+it('fails an exact URL-guard blocked redirect with its actual diagnostic after accepting a legitimate redirect', async () => {
+  const f = fixture(), a = f.input(), redirectedUrl = 'https://article.example/allowed';
+  try {
+    const nativeOpen = f.browser.open.getMockImplementation()!;
+    f.browser.researchNavigationUrls = () => [url, redirectedUrl];
+    f.browser.open.mockImplementationOnce(async args => {
+      const opened = await nativeOpen(args);
+      f.tabs.get(opened.tabId)!.url = redirectedUrl;
+      opened.nav.outcome.finalUrl = redirectedUrl;
+      return opened;
+    });
+    expect(await f.reader.read(a)).toMatchObject({ status: 'readable', document: { url: redirectedUrl } });
+    expect(a.onDocument).toHaveBeenCalledTimes(1);
+    const verdict = checkUrl('http://127.0.0.1/private');
+    if (verdict.ok) throw new Error('fixture must produce a real URL guard rejection');
+    f.browser.open.mockImplementationOnce(async args => {
+      const opened = await nativeOpen(args);
+      return { ...opened, nav: { ...opened.nav, outcome: { kind: 'blocked', reason: verdict.reason } } } as any;
+    });
+    expect(await f.reader.read({ ...a, attemptId: 'blocked-redirect' }))
+      .toMatchObject({ status: 'failed', reason: `navigation_blocked:${verdict.reason}` });
+    expect(a.onDocument).toHaveBeenCalledTimes(1);
+    const lookalike = new Error('navigation_blocked');
+    f.browser.open.mockRejectedValueOnce(lookalike);
+    await expect(f.reader.read(a)).rejects.toBe(lookalike);
+  } finally { await f.reader.dispose(); }
 });

@@ -109,6 +109,23 @@ describe('ResearchTaskCard', () => {
     expect(visibleText(mounted.tree)).toContain('浏览器文档字节 456/1073741824');
   });
 
+  it.each([
+    ['browser.too_many_tabs', '浏览器标签已满，请关闭不需要的标签后继续'],
+    ['browser.not_dispatchable', '浏览器页面暂不可用，可重新打开后继续'],
+    ['browser.page_no_result', '浏览器页面求值暂未返回，可继续读取'],
+  ])('keeps recovery actions available for native reason %s', async (reason, message) => {
+    installRecovery(snapshot, undefined, [{ ...source('source-a', 'attempt-a'), reason }]);
+    const mounted = await ready();
+    mounted.find('research-task-toggle').props.onClick(); await mounted.settle();
+    expect(mounted.find('research-source-open-source-a').props.disabled).toBe(false);
+    expect(mounted.find('research-source-retry-source-a').props.disabled).toBe(false);
+    expect(visibleText(mounted.find('research-task-items'))).toContain(message);
+    mounted.find('research-source-retry-source-a').props.onClick(); await mounted.settle();
+    expect(invoke).toHaveBeenCalledWith('webResearch.taskRetrySource', {
+      threadId: 'thread-1', researchRunId: 'task-1', sourceId: 'source-a', expectedAttemptId: 'attempt-a',
+    });
+  });
+
   it('opens the panel once through the source RPC, keeps waiting, then retries the returned version', async () => {
     installRecovery(snapshot);
     const mounted = await ready();

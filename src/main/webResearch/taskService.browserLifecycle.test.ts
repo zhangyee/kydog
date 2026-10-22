@@ -10,6 +10,7 @@ import type { BrowserReader, BrowserReadInput } from './browserReadTypes';
 import { createBrowserReader } from './browserReader';
 import type { BrowserService } from '../browser/browserService';
 import { extractBody } from './extractBody';
+import { KydogError } from '../../shared/errors';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -447,4 +448,60 @@ describe('browser task lifecycle', () => {
     expect(await readFile(path.join(h.root, reports[0]), 'utf8')).toBe('Deferred');
   });
 
+});
+
+it.each([
+  ['browser.too_many_tabs', 'waiting_user'], ['browser.not_dispatchable', 'waiting_user'],
+  ['browser.page_no_result', 'waiting_user'], ['browser.bad_url', 'failed'],
+] as const)('persists native admission %s with its recovery/counting semantics', async (code, status) => {
+  const tabs = new Map<string, { owner: string; url: string }>();
+  let admissionError: KydogError | undefined, opens = 0;
+  const browser = {
+    onTabDestroyed: () => () => {}, onTabUnavailable: () => () => {},
+    researchTabStatus: (id: string) => tabs.has(id) ? 'available' : 'missing',
+    researchOwnsTab: (id: string, owner: string) => tabs.get(id)?.owner === owner,
+    open: async ({ ownerThreadId, url }: { ownerThreadId: string; url: string }) => {
+      opens++;
+      if (admissionError) throw admissionError;
+      const tabId = `native-${opens}`; tabs.set(tabId, { owner: ownerThreadId, url });
+      return { tabId, nav: { navigationId: `nav-${opens}`, outcome: { kind: 'ok', finalUrl: url, httpStatusCode: 200 } } };
+    },
+    researchNavigationUrls: (id: string) => [tabs.get(id)!.url],
+    locationFacts: (id: string) => ({ currentUrl: tabs.get(id)!.url, documentEpoch: 2, routeRevision: 3, navigationSequence: 4 }),
+    withResearchDriving: async <T>(_id: string, _owner: string, work: () => Promise<T>) => work(),
+    observeResearchDocument: async ({ tabId }: { tabId: string }) => ({
+      capture: async () => ({ status: 'snapshot', revision: 1, document: { url: tabs.get(tabId)!.url,
+        identity: { documentEpoch: 2, routeRevision: 3, navigationSequence: 4 }, rootRule: 'article',
+        utf8Bytes: Buffer.byteLength(html), html, mainStatusCode: 200 } }),
+      dispose: async () => {},
+    }),
+    activate: () => {}, close: (id: string) => { tabs.delete(id); },
+  };
+  const nativeReader = createBrowserReader({ browser: browser as unknown as BrowserService });
+  try {
+    const positive = await harness(); positive.deps.browserReader = nativeReader;
+    await positive.service.retrySource({ ...positive.key, expectedAttemptId: null }); await positive.idle();
+    expect((await positive.saved()).status).toBe('completed');
+    expect((await positive.service.get(positive.key.threadId, positive.key.researchRunId)).counts)
+      .toMatchObject({ waiting_user: 0, completed: 1, processed: 1 });
+    admissionError = new KydogError(code, 'actual native admission diagnostic');
+    const h = await harness(); h.deps.browserReader = nativeReader;
+    await h.service.retrySource({ ...h.key, expectedAttemptId: null }); await h.idle();
+    const saved = await h.saved(), expectedAttemptId = saved.browser!.attempts[0].attemptId;
+    expect(saved).toMatchObject({ status, reason: status === 'waiting_user' ? code : admissionError.message });
+    expect(saved.browser!.attempts).toHaveLength(1);
+    expect(saved.browser!.attempts[0]).toMatchObject({ phase: status, reason: saved.reason, navigationReserved: true });
+    expect((await h.service.get(h.key.threadId, h.key.researchRunId)).counts)
+      .toMatchObject({ waiting_user: status === 'waiting_user' ? 1 : 0, failed: status === 'failed' ? 1 : 0, processed: status === 'failed' ? 1 : 0 });
+    const inspected = await h.service.inspect(h.key.threadId, h.key.researchRunId, { view: 'sources' });
+    expect(inspected.items[0]).toMatchObject({ sourceId: h.key.sourceId, status, reason: saved.reason, expectedAttemptId });
+    expect((await h.store.loadTask(h.key.threadId, h.key.researchRunId)).usage.fetchesDispatched).toBe(3);
+    await h.idle(); expect(opens).toBe(2);
+    admissionError = undefined;
+    await h.service.retrySource({ ...h.key, expectedAttemptId }); await h.idle();
+    expect((await h.saved()).status).toBe('completed');
+    expect((await h.saved()).browser!.attempts).toHaveLength(2);
+    expect((await h.store.loadTask(h.key.threadId, h.key.researchRunId)).usage.fetchesDispatched).toBe(4);
+    expect(opens).toBe(3);
+  } finally { await nativeReader.dispose(); }
 });

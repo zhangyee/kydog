@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { KydogError } from '../../shared/errors';
 import type { BrowserService } from '../browser/browserService';
 import { ResearchDocumentInvalidatedError, type ResearchDocumentLease } from '../browser/researchDocument';
 import type { BrowserLeaseUnavailable, BrowserReadResult, BrowserReader, BrowserSourceKey, ResearchDocumentSnapshot } from './browserReadTypes';
@@ -66,6 +67,12 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
     const lease = leases.get(keyOf(key));
     return lease && !lease.unavailable && browser.researchTabStatus(lease.tabId, key.threadId) === 'available' ? lease : undefined;
   }
+  function representsSource(lease: SourceLease, requestedUrl: string): boolean {
+    const location = browser.locationFacts(lease.tabId);
+    return lease.requestedUrl === canonical(requestedUrl) && lease.urls.has(canonical(location.currentUrl))
+      && !(location.navigationEvent === 'did-start-navigation' && location.navigationType === 'cross_document'
+        && (!location.navigationUrl || !lease.urls.has(canonical(location.navigationUrl))));
+  }
   function operation(key: BrowserSourceKey, signal: AbortSignal): { controller: AbortController; cleanup: () => void } {
     if (disposed) throw new Error('browser_reader_disposed');
     checkSignal(signal);
@@ -85,8 +92,7 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
     if (old?.unavailable && browser.researchOwnsTab(old.tabId, input.threadId)) browser.close(old.tabId);
     const previous = current(input);
     const canReuse = previous && browser.researchOwnsTab(previous.tabId, input.threadId)
-      && previous.urls.has(canonical(browser.locationFacts(previous.tabId).currentUrl))
-      && previous.requestedUrl === canonical(input.requestedUrl);
+      && representsSource(previous, input.requestedUrl);
     if (previous && !canReuse && browser.researchOwnsTab(previous.tabId, input.threadId)) browser.keep(previous.tabId);
     const opening = browser.open({ url: input.requestedUrl, ...(canReuse ? { tabId: previous.tabId } : {}), ownerThreadId: input.threadId, activate: false, signal });
     // BrowserService aborts navigation, but still returns its synchronously created
@@ -134,6 +140,7 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
           const outcome = opened.outcome;
           if (outcome.kind === 'ok' || outcome.kind === 'ok_same_document') observedFacts = { finalUrl: outcome.finalUrl, ...(outcome.kind === 'ok' ? { mainStatusCode: outcome.httpStatusCode } : {}) };
           if (outcome.kind === 'download') return { status: 'failed', reason: 'navigation_download', finalUrl: outcome.url, leaseId: lease.leaseId };
+          if (outcome.kind === 'blocked') return { status: 'failed', reason: `navigation_blocked:${outcome.reason}`, leaseId: lease.leaseId };
           if (outcome.kind !== 'ok' && outcome.kind !== 'ok_same_document') {
             return waiting(outcome.kind === 'timeout' ? 'browser_read_timeout' : outcome.kind === 'crashed' ? `renderer_crashed:${outcome.reason}` : `navigation_${outcome.kind}`);
           }
@@ -216,6 +223,8 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
         if (controller.signal.aborted && attempts.get(id) !== controller) return waiting('attempt_superseded');
         const unavailable = lease?.unavailable ?? leases.get(id)?.unavailable;
         if (unavailable) return waiting(unavailable);
+        if (error instanceof KydogError && (error.code === 'browser.too_many_tabs'
+          || error.code === 'browser.not_dispatchable' || error.code === 'browser.page_no_result')) return waiting(error.code);
         throw error;
       } finally {
         if (timer) clearTimeout(timer); unlock?.(); op.cleanup();
@@ -225,7 +234,9 @@ export function createBrowserReader({ browser }: { browser: BrowserService }): B
     async openForUser(input) {
       const op = operation(input, input.signal);
       try {
-        const lease = current(input) ?? await open(input, op.controller.signal);
+        const previous = current(input);
+        const lease = previous && representsSource(previous, input.requestedUrl)
+          ? previous : await open(input, op.controller.signal);
         checkSignal(op.controller.signal);
         if (current(input)?.leaseId !== lease.leaseId) throw new Error(lease.unavailable ?? 'browser_lease_unavailable');
         if (input.attemptId !== undefined) lease.attemptId = input.attemptId;
