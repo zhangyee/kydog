@@ -1,10 +1,16 @@
 import { JSDOM } from 'jsdom';
 import {randomUUID} from 'node:crypto';
 import type {XTextObservation} from '../main/x/xResearchTypes';
-import { vi } from 'vitest';
+import { afterEach, vi } from 'vitest';
 import { decodeXPage, xPageExpression, type XPageRequest } from '../main/x/xPageSource';
 import type { XResearchBrowser, XQueuedPage } from '../main/x/xResearchBrowser';
 import type { XResearchContext } from '../main/x/xResearchSearch';
+
+const stagedPages = new Set<JSDOM>();
+afterEach(() => {
+  for (const dom of stagedPages) dom.window.close();
+  stagedPages.clear();
+});
 
 export const query = { id:'q2', query:'scientific agents', purpose:'find accounts', product:'Latest' as const };
 export const searchInput = { search:{objective:'research', queries:[query], maxPostsPerQuery:10, maxScrollsPerQuery:1} };
@@ -20,9 +26,12 @@ export function fixture(pages:string[], options:{finalUrl?:(url:string)=>string;
     if (collects++===options.collectErrorAt) throw new TypeError('broken adapter');
     const html=pages[Math.min(index,pages.length-1)];
     const dom=new JSDOM(html,{url,runScripts:'outside-only'});
+    try {
     Object.defineProperty(dom.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
     Object.defineProperty(dom.window.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
-    const raw=dom.window.eval(xPageExpression(request));
+    // Electron transfers data out of the page's JS realm. Keeping eval objects
+    // here instead retains that VM through observations and vi.fn results.
+    const raw=structuredClone(dom.window.eval(xPageExpression(request)));
     const observation=decodeXPage(raw,request,{currentUrl:url,documentEpoch:3,routeRevision:revision,navigationSequence:sequence,navigationEvent:'did-navigate',navigationType:'cross_document',navigationUrl:url},{parentArticle:false});
     // Legacy output/SDK unit fixtures are DTO test doubles, NOT captured wire
     // evidence. The dedicated xNetwork* tests exercise real source decoding.
@@ -66,6 +75,7 @@ export function fixture(pages:string[], options:{finalUrl?:(url:string)=>string;
       observation.network={pages:[networkPage],proof:readProof??provenance};
     }
     return observation;
+    } finally { dom.window.close(); }
   });
   const act=vi.fn(async (action:any, _snapshot?:unknown, actOptions?:import('../main/x/xResearchBrowser').XActionOptions) => {
     if(options.scrollError) throw options.scrollError;
@@ -97,7 +107,10 @@ export async function stagedFixture(options: { semanticLabels?: boolean; scrollE
   let expanded=false, replies=false, url=parentUrl, generation=1, current:any;
   const parent=()=>readHtml(post('123','alice',expanded?'expanded body':'preview').replace('</article>',(expanded?'':bodyButton)+(options.article?entry:'')+'</article>')+(discussionReady?post('789','carol','first reply')+(replies?post('790','dave','second reply'):replyButton):'')+(options.semanticLabels?`<div role="status">${expanded?'terminal End of conversation':'initial 回复'}</div>`:''));
   const render=(html:string)=>{
+    current?.window.close();
+    stagedPages.delete(current);
     current=new JSDOM(html,{url,runScripts:'outside-only'});
+    stagedPages.add(current);
     Object.defineProperty(current.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
     Object.defineProperty(current.window.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
   };
@@ -126,7 +139,7 @@ export async function stagedFixture(options: { semanticLabels?: boolean; scrollE
     enqueue:async(_id:string,work:()=>Promise<unknown>)=>work(), withAgentDriving:async(_id:string,_thread:string,work:()=>Promise<unknown>)=>work(),
     onTabDestroyed:()=>()=>{},onTabUnavailable:()=>()=>{},locationFacts:facts,prepareForDomRead:async()=>{},
     evalInPage:async(_id:string,code:string)=>{
-      if(code.startsWith('/* kydog-x-root-release */')) return current.window.eval(code);
+      if(code.startsWith('/* kydog-x-root-release */')) return structuredClone(current.window.eval(code));
       collections++;
       if(options.discussion && expanded && url===parentUrl && ++discussionCollections>1) {
         if(options.discussion==='ready' || options.discussion==='late'){discussionReady=true;render(parent());}
@@ -136,7 +149,7 @@ export async function stagedFixture(options: { semanticLabels?: boolean; scrollE
       }
       if(options.discussion==='auth' && discussionCollections===1) setTimeout(()=>{url='https://x.com/i/jf/onboarding/web';generation++;render('<div role="dialog"><input name="username_or_email" type="text" autocomplete="username webauthn"><input name="password" type="password"></div>');},0);
       emitRead();
-      const raw=current.window.eval(code);
+      const raw=structuredClone(current.window.eval(code));
       if(options.discussion==='stale' && discussionCollections>1) generation++;
       if(options.discussion==='late' && discussionCollections>1) await new Promise(resolve=>setTimeout(resolve,8001));
       const phase=url===articleUrl?'article':opens.length>1?'returned':'initial';
