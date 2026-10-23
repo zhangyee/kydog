@@ -351,7 +351,8 @@ function fixturePage(host: string, pathname: string): string {
     + `<body><div><h1>Example Domain</h1><p>KyDog e2e 本地夹具页：${where}</p></div></body></html>`;
 }
 
-type FixtureProxy = { port: number; close(): Promise<void> };
+type HeldResponse = { requested: Promise<void>; release(): void };
+type FixtureProxy = { port: number; holdResponse(pathname: string): HeldResponse; close(): Promise<void> };
 
 /**
  * 起一个只认 `FIXTURE_HOSTS` 的 HTTPS 代理（监听 127.0.0.1 的随机端口）。
@@ -361,12 +362,19 @@ type FixtureProxy = { port: number; close(): Promise<void> };
  * 明文的代理请求与名单外的 host 一律 403。
  */
 async function startFixtureProxy(): Promise<FixtureProxy> {
+  const held = new Map<string, { ready: Promise<void>; requested(): void; release(): void }>();
   const origin = http.createServer((req, res) => {
     const host = (req.headers.host ?? '').replace(/:\d+$/, '');
     const pathname = (req.url ?? '/').split('?')[0];
     if (pathname === '/favicon.ico') { res.writeHead(404); res.end(); return; }
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-    res.end(fixturePage(host, pathname));
+    const send = () => {
+      if (res.destroyed) return;
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(fixturePage(host, pathname));
+    };
+    const gate = held.get(pathname);
+    if (gate) { gate.requested(); void gate.ready.then(send); }
+    else send();
   });
   origin.on('clientError', (_err, s) => { s.destroy(); });
   const proxy = http.createServer((_req, res) => { res.writeHead(403); res.end(); });
@@ -393,7 +401,15 @@ async function startFixtureProxy(): Promise<FixtureProxy> {
   await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', () => resolve()));
   return {
     port: (proxy.address() as AddressInfo).port,
+    holdResponse: (pathname) => {
+      let release!: () => void, requested!: () => void;
+      const ready = new Promise<void>(resolve => { release = resolve; });
+      const arrival = new Promise<void>(resolve => { requested = resolve; });
+      held.set(pathname, { ready, requested, release });
+      return { requested: arrival, release };
+    },
     close: () => new Promise<void>((resolve) => {
+      for (const gate of held.values()) gate.release();
       for (const s of sockets) s.destroy();
       proxy.close(() => resolve());
     }),
@@ -423,7 +439,7 @@ async function routeBrowserThroughFixtureProxy(app: ElectronApplication, port: n
 }
 
 /** 一次离线启动：代理 + 应用（`agent: true` 时接得上 agent，见 `launchWithAgent`）。 */
-type OfflineApp = { launched: LaunchedApp; fixturePath: string; close(): Promise<void> };
+type OfflineApp = { launched: LaunchedApp; fixturePath: string; holdResponse(pathname: string): HeldResponse; close(): Promise<void> };
 
 async function launchOffline(opts: { agent?: boolean } = {}): Promise<OfflineApp> {
   const proxy = await startFixtureProxy();
@@ -434,7 +450,7 @@ async function launchOffline(opts: { agent?: boolean } = {}): Promise<OfflineApp
     else launched = await launchKydog();
     await routeBrowserThroughFixtureProxy(launched.app, proxy.port);
     const app = launched;
-    return { launched: app, fixturePath, close: async () => { await teardown(app); await proxy.close(); } };
+    return { launched: app, fixturePath, holdResponse: proxy.holdResponse, close: async () => { await teardown(app); await proxy.close(); } };
   } catch (err) {
     if (launched) await teardown(launched);
     await proxy.close();
@@ -746,6 +762,8 @@ test.describe('61-browser · 一次启动：侧栏从没打开过', () => {
       });
       return true;
     })()`);
+    const held = env.holdResponse('/popup-owned/');
+    try {
     const typed = (await runTools(page, fixturePath, [{
       toolCallId: 'tc-popup-owner-type', name: 'browser_act',
       args: { tabId: bId, actions: [{ kind: 'type', selector: '#q', text: 'open' }] },
@@ -758,8 +776,20 @@ test.describe('61-browser · 一次启动：侧栏从没打开过', () => {
     expect(acted.status, acted.text).toBe('ok');
     expect(acted.text).toContain('这一批里新开了 1 个标签页');
     expect(acted.text).toContain('https://example.net/popup-owned/');
+    await held.requested;
+    // 工具返回的是已创建标签和导航意图，不保证新文档已经提交。代理先扣住响应，
+    // 首轮读取实际 URL 后再放行，保证每次都覆盖 CI 见到的「新 WC 的 URL 还是空」
+    // 状态；之后只等真实 URL 提交，不靠 sleep 或放宽 timeout。
+    await expect.poll(async () => {
+      const committed = await app.evaluate(({ webContents }) => webContents.getAllWebContents()
+        .filter(w => !w.isDestroyed() && w.getURL() === 'https://example.net/popup-owned/')
+        .map(w => w.getURL()));
+      held.release();
+      return committed;
+    }).toEqual(['https://example.net/popup-owned/']);
     expect(await inPage<string>(app, 'example.net/popup-owned/', 'location.href'))
       .toBe('https://example.net/popup-owned/');
+    } finally { held.release(); }
   });
 
   /**

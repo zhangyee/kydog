@@ -302,6 +302,10 @@ test('27-composer: project pill switches the empty thread to another project', a
 
 test('23/24-llm: Composer 显示默认模型；pill 里切到另一家只改这个 thread', async () => {
   const { page } = launched;
+  // 前面的 Composer 用例会新建多条对话；种下的旧对话可能已被前五条预览收起。
+  // 通过真实的展开入口找到它，而不是假定所有历史对话一直挂在 DOM 上。
+  const more = page.getByTestId(`project-show-more-${projectA}`);
+  if (await more.isVisible()) await more.click();
   await page.getByTestId('thread-t-24').click();
   // 胶囊与选单显示的是模型**名**（目录里的 `name`），不是 id —— 相邻两代的 id 只差一个
   // 版本号，光看 id 认不出谁是谁。id 仍然在选单行里，所以下面按 id 点得中。

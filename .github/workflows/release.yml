@@ -18,8 +18,8 @@ jobs:
           # 静默消失，而绿灯照常亮。
           # 三个 runner 的软链能力都已由 Report 步骤实测确认（2026-09-01 run 33513291710
           # 三平台探针均打出 OK），全部钉死。探针步骤保留：能力哪天退化，日志里看得见。
-          - { os: macos-15,       target: darwin-arm64, requireSymlink: '1' }
-          - { os: macos-15-intel, target: darwin-x64,   requireSymlink: '1' }
+          - { os: macos-26,       target: darwin-arm64, requireSymlink: '1' }
+          - { os: macos-26-intel, target: darwin-x64,   requireSymlink: '1' }
           - { os: windows-latest, target: win32-x64,    requireSymlink: '1' }
     runs-on: ${{ matrix.os }}
     steps:
@@ -27,7 +27,7 @@ jobs:
       - uses: actions/setup-node@v7
         with: { node-version-file: '.nvmrc', cache: 'npm' }
       - name: Report build runtime
-        run: node -e "const os=require('node:os'),v8=require('node:v8'); console.log(JSON.stringify({node:process.version,platform:process.platform,arch:process.arch,cpus:os.availableParallelism(),memoryGiB:os.totalmem()/2**30,heapLimitMiB:v8.getHeapStatistics().heap_size_limit/2**20},null,2))"
+        run: node -e "const os=require('node:os'),v8=require('node:v8'); console.log(JSON.stringify({node:process.version,platform:process.platform,osRelease:os.release(),arch:process.arch,cpus:os.availableParallelism(),memoryGiB:os.totalmem()/2**30,heapLimitMiB:v8.getHeapStatistics().heap_size_limit/2**20},null,2))"
       - name: Verify tag matches package.json version
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
