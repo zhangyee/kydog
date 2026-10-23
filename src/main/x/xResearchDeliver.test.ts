@@ -20,12 +20,15 @@ import { logger } from '../log';
 import { X_RESEARCH_MAX_OUTPUT_BYTES, type XResearchResult } from './xResearchTypes';
 
 const roots: string[] = [];
+const cleanups: Array<() => Promise<void>> = [];
 function root(): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'xdeliver-'));
   roots.push(dir);
   return dir;
 }
-afterEach(() => {
+afterEach(async () => {
+  // wait() returns before its delivery mark is persisted; drain the service before deleting its store.
+  for (const cleanup of cleanups.splice(0)) await cleanup();
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -303,6 +306,7 @@ describe('XResearchTaskService.wait', () => {
       store, runWork, artifacts: () => artifacts, onUpdate: () => undefined,
     });
     const thread = owner();
+    cleanups.push(() => service.disposeThread(thread.threadId));
     const submitted = await service.submit({ work: searchWork() }, thread);
     await service.whenIdle(thread.threadId, submitted.researchRunId);
     const waited = await service.wait(thread.threadId, submitted.researchRunId, 'call-wait');
@@ -331,6 +335,7 @@ describe('XResearchTaskService.wait', () => {
       store, runWork, artifacts: () => artifacts, onUpdate: () => undefined,
     });
     const thread = owner();
+    cleanups.push(() => service.disposeThread(thread.threadId));
     const submitted = await service.submit({ work: searchWork() }, thread);
     await service.whenIdle(thread.threadId, submitted.researchRunId);
     const waited = await service.wait(thread.threadId, submitted.researchRunId, 'call-wait');
@@ -366,6 +371,7 @@ describe('XResearchTaskService.wait', () => {
       store, runWork, artifacts: () => artifacts, onUpdate: () => undefined,
     });
     const thread = owner();
+    cleanups.push(() => service.disposeThread(thread.threadId));
     const submitted = await service.submit({ work: searchWork() }, thread);
     await service.whenIdle(thread.threadId, submitted.researchRunId);
     const waited = await service.wait(thread.threadId, submitted.researchRunId,
@@ -406,6 +412,7 @@ describe('XResearchTaskService.wait', () => {
       now: () => new Date(Date.UTC(2026, 9, 16) + (tick++) * 1000).toISOString(),
     });
     const thread = owner();
+    cleanups.push(() => service.disposeThread(thread.threadId));
     const first = await service.submit({ work: searchWork() }, thread);
     const second = await service.submit(
       { researchRunId: first.researchRunId, work: searchWork() }, thread);
@@ -464,6 +471,7 @@ describe('XResearchTaskService.wait', () => {
       now: () => new Date(Date.UTC(2026, 9, 16) + (tick++) * 1000).toISOString(),
     });
     const thread = owner();
+    cleanups.push(() => service.disposeThread(thread.threadId));
     const first = await service.submit({ work: searchWork() }, thread);
     for (let index = 1; index < 6; index += 1) {
       await service.submit({ researchRunId: first.researchRunId, work: searchWork() }, thread);
@@ -526,6 +534,7 @@ describe('XResearchTaskService.wait', () => {
       store, runWork, artifacts: () => artifacts, onUpdate: () => undefined,
     });
     const thread = owner();
+    cleanups.push(() => service.disposeThread(thread.threadId));
     const submitted = await service.submit({ work: searchWork() }, thread);
     const second = await service.submit(
       { researchRunId: submitted.researchRunId, work: searchWork() }, thread);
@@ -593,6 +602,7 @@ describe('XResearchTaskService.wait', () => {
     const service = new XResearchTaskService({
       store, runWork: realResult, artifacts: () => artifacts.store, onUpdate: () => undefined,
     });
+    cleanups.push(() => service.disposeThread(thread.threadId));
     const waited = await service.wait(thread.threadId, researchRunId, 'call-wait');
     expect(artifacts.reads).toEqual([ref]);
     expect(waited.deliveries[0]).toMatchObject({
@@ -637,6 +647,7 @@ describe('XResearchTaskService.wait', () => {
     const service = new XResearchTaskService({
       store, runWork: realResult, artifacts: () => artifacts.store, onUpdate: () => undefined,
     });
+    cleanups.push(() => service.disposeThread(thread.threadId));
     const waited = await service.wait(thread.threadId, researchRunId,
       'call-wait-0000000000000000000000000000');
     // 重启路径按**量出来的包络额度**裁（T5/B'）：不是整份 1 MiB 的预算。
@@ -685,6 +696,7 @@ describe('XResearchTaskService.wait', () => {
     const service = new XResearchTaskService({
       store, runWork: realResult, artifacts: () => artifacts.store, onUpdate: () => undefined,
     });
+    cleanups.push(() => service.disposeThread(thread.threadId));
     const waited = await service.wait(thread.threadId, researchRunId, 'call-wait');
     // 拿不到结果的那一份不许把队列堵死：后面那份照常交付。
     expect(artifacts.reads).toEqual([ref]);
