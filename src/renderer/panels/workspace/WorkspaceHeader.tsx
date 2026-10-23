@@ -1,8 +1,10 @@
 import { KyLogo, KyMascot, PanelIcon } from '../../shared';
 import { useUiStore } from '../../stores/uiStore';
+import { useThreadsStore } from '../../stores/threadsStore';
 
 export function WorkspaceHeader() {
   const toggle = useUiStore((s) => s.toggleWorkspace);
+  const singleProjectPath = useThreadsStore((s) => s.singleProjectPath);
   return (
     <div
       className="flex items-center"
@@ -15,6 +17,7 @@ export function WorkspaceHeader() {
         style={{
           flex: 1,
           display: 'inline-flex',
+          flexWrap: 'wrap',
           alignItems: 'center',
           gap: 6,
           color: 'var(--color-ink)',
@@ -23,6 +26,12 @@ export function WorkspaceHeader() {
         <KyLogo size={20} />
         {/* mascot content 在 SVG box 偏下，align-items:center 会显得比文字低 ~2-3px；负 marginTop 校正 */}
         <KyMascot size={24} style={{ marginTop: -5 }} />
+        {singleProjectPath !== null ? (
+          <div data-testid="dev-project-notice" title={singleProjectPath}
+            style={{ flexBasis: '100%', fontSize: 10, color: 'var(--color-ink-soft)' }}>
+            开发调试 · 单项目模式
+          </div>
+        ) : null}
       </div>
       <button
         type="button"

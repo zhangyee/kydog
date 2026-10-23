@@ -12,6 +12,7 @@
     "postinstall": "node scripts/install-cli.mjs",
     "cli:update": "node scripts/update-cli.mjs",
     "onboarding:reset": "node scripts/reset-onboarding.mjs",
+    "dev-project": "node scripts/dev-project.mjs",
     "start": "electron-forge start",
     "package": "electron-forge package",
     "make": "electron-forge make",

@@ -34,6 +34,7 @@ export function sanitizeBrowserWidth(v: unknown): number | null {
 export function defaultSettings(): SettingsFile {
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
+    development: { singleProject: { enabled: false, path: null } },
     ui: {
       theme: 'vellum',
       locale: 'zh',
@@ -412,6 +413,12 @@ export function parseAndMigrateSettings(raw: string): ParsedSettings {
     if (v !== CURRENT_SCHEMA_VERSION) logger.warn('persist.settingsFile', `migrating schema v${v} → v${CURRENT_SCHEMA_VERSION}`);
     return { kind: 'ok', settings: {
       schemaVersion: CURRENT_SCHEMA_VERSION,
+      development: {
+        singleProject: {
+          enabled: parsed.development?.singleProject?.enabled === true,
+          path: typeof parsed.development?.singleProject?.path === 'string' ? parsed.development.singleProject.path : null,
+        },
+      },
       ui: {
         ...d.ui,
         ...(parsed.ui ?? {}),

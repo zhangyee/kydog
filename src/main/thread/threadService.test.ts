@@ -1,16 +1,105 @@
 import { disposeWebResearchThread } from '../webResearch/service';
 vi.mock('../webResearch/service', () => ({ disposeWebResearchThread: vi.fn(async () => {}) }));
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, existsSync, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as paths from '../persist/paths';
-import { saveIndex } from '../persist/indexFile';
-import { threadService } from './threadService';
+import { saveIndex, loadIndex } from '../persist/indexFile';
+import { threadService, ThreadService } from './threadService';
 import { agentService } from '../agent/AgentService';
 import { encodeUserTurn, refTag } from '../../shared/userTurn';
 import { researchRunStore } from '../webResearch/runStore';
 import { xResearchTaskStore } from '../x/xResearchTaskStore';
+
+describe('单项目对话范围', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-thread-scope-'));
+    vi.spyOn(paths, 'INDEX_FILE', 'get').mockReturnValue(path.join(dir, 'index.json'));
+    await saveIndex({ schemaVersion: 1,
+      projects: [{ path: '/a', addedAt: 'old' }, { path: '/debug', addedAt: 'new' }],
+      threads: [
+        { id: 'a', projectPath: '/a', title: 'other', createdAt: 'old', lastActiveAt: 'old' },
+        { id: 'debug', projectPath: '/debug', title: 'target', createdAt: 'new', lastActiveAt: 'new' },
+      ] });
+  });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
+
+  it('列表只返回目标对话，完整索引不变；关闭模式重新得到全部对话', async () => {
+    const normal = new ThreadService();
+    expect((await normal.listAll()).map(t => t.id)).toEqual(['a', 'debug']);
+    const before = await loadIndex();
+    const scoped = new ThreadService({ singleProjectPath: '/debug' });
+    expect((await scoped.listAll()).map(t => t.id)).toEqual(['debug']);
+    expect((await normal.list({ projectPath: '/a' })).map(t => t.id)).toEqual(['a']);
+    expect(await scoped.list({ projectPath: '/a' })).toEqual([]);
+    expect((await scoped.list({ projectPath: '/debug' })).map(t => t.id)).toEqual(['debug']);
+    expect(await loadIndex()).toEqual(before);
+    expect((await normal.listAll()).map(t => t.id)).toEqual(['a', 'debug']);
+  });
+
+  it('允许目标内新建，拒绝在其他项目新建或把目标对话移到其他项目', async () => {
+    vi.mocked(agentService.loadHistory).mockResolvedValue([]);
+    const scoped = new ThreadService({ singleProjectPath: '/debug' });
+    expect((await scoped.create({ projectPath: '/debug' })).projectPath).toBe('/debug');
+    const before = await loadIndex();
+    await expect(scoped.create({ projectPath: '/a' })).rejects.toMatchObject({ code: 'project.single_project_locked' });
+    await expect(scoped.update({ threadId: 'debug', projectPath: '/a' }))
+      .rejects.toMatchObject({ code: 'project.single_project_locked' });
+    expect(await loadIndex()).toEqual(before);
+  });
+
+  it('未登记的调试项目对话在 on 可见、off 隐藏、再次 on 恢复，记录不删除', async () => {
+    const index = await loadIndex();
+    index.projects = index.projects.filter(p => p.path === '/a');
+    await saveIndex(index);
+    const scoped = new ThreadService({ singleProjectPath: '/debug' });
+    expect((await scoped.listAll()).map(t => t.id)).toEqual(['debug']);
+    expect((await scoped.list({ projectPath: '/debug' })).map(t => t.id)).toEqual(['debug']);
+    const normal = new ThreadService({ singleProjectPath: null });
+    expect((await normal.listAll()).map(t => t.id)).toEqual(['a']);
+    expect(await normal.list({ projectPath: '/debug' })).toEqual([]);
+    expect(await loadIndex()).toEqual(index);
+    expect((await new ThreadService({ singleProjectPath: '/debug' }).listAll()).map(t => t.id)).toEqual(['debug']);
+  });
+
+  it('临时项目可新建并保存对话，不登记项目，off 后隐藏新旧调试对话', async () => {
+    const index = await loadIndex();
+    index.projects = index.projects.filter(p => p.path === '/a');
+    await saveIndex(index);
+    const scoped = new ThreadService({ singleProjectPath: '/debug' });
+    const created = await scoped.create({ projectPath: '/debug', title: '临时项目对话' });
+    expect(created).toMatchObject({ projectPath: '/debug', title: '临时项目对话' });
+    expect((await scoped.listAll()).map(t => t.id)).toEqual(['debug', created.id]);
+    expect((await loadIndex()).projects).toEqual([{ path: '/a', addedAt: 'old' }]);
+    expect((await loadIndex()).threads.map(t => t.id)).toEqual(['a', 'debug', created.id]);
+    expect((await new ThreadService({ singleProjectPath: null }).listAll()).map(t => t.id)).toEqual(['a']);
+    expect((await new ThreadService({ singleProjectPath: '/debug' }).listAll()).map(t => t.id)).toEqual(['debug', created.id]);
+  });
+
+  it.each(['invalid-json', 'unsupported-version', 'read-error'])(
+    '临时项目新建对话拒绝运行中索引故障且保留原件：%s', async failure => {
+      const index = await loadIndex();
+      index.projects = index.projects.filter(p => p.path === '/a');
+      await saveIndex(index);
+      const scoped = new ThreadService({ singleProjectPath: '/debug' });
+      const control = await scoped.create({ projectPath: '/debug', title: '成功对照' });
+      expect((await loadIndex()).threads.map(t => t.id)).toEqual(['a', 'debug', control.id]);
+      const file = path.join(dir, 'index.json');
+      if (failure === 'invalid-json') writeFileSync(file, '{broken');
+      if (failure === 'unsupported-version') {
+        writeFileSync(file, JSON.stringify({ ...await loadIndex(), schemaVersion: 999 }));
+      }
+      const before = readFileSync(file, 'utf8');
+      if (failure === 'read-error') {
+        vi.spyOn(fs, 'readFile').mockRejectedValueOnce(Object.assign(new Error('denied'), { code: 'EACCES' }));
+      }
+      await expect(scoped.create({ projectPath: '/debug' })).rejects.toMatchObject({ code: 'fs.read_failed' });
+      expect(readFileSync(file, 'utf8')).toBe(before);
+    },
+  );
+});
 
 vi.mock('../webResearch/runStore', () => ({
   researchRunStore: { removeRunsForThread: vi.fn().mockResolvedValue(undefined) },

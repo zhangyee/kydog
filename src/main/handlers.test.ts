@@ -93,7 +93,7 @@ vi.mock('./settings/settingsService', async (orig) => ({
 }));
 
 // app.bootstrap 会去读这几样真实磁盘状态，测密文出口时全部替身掉。
-vi.mock('./project/projectService', () => ({ projectService: { list: async () => [] } }));
+vi.mock('./project/projectService', () => ({ projectService: { singleProjectPath: '/debug', list: async () => [] } }));
 vi.mock('./thread/threadService', () => ({ threadService: { listAll: async () => [] } }));
 vi.mock('./harness/identityService', () => ({ getIdentity: async () => ({ userName: '老张', agentName: 'KyDog' }) }));
 vi.mock('./harness/manifest', () => ({
@@ -215,6 +215,10 @@ beforeEach(() => {
   h.researchCalls = [];
   for (const method of Object.values(h.taskService)) method.mockReset();
   registerAllHandlers();
+});
+
+it('bootstrap 携带本次启动的项目范围，供界面限制项目入口', async () => {
+  expect(await call('app.bootstrap', undefined)).toMatchObject({ singleProjectPath: '/debug' });
 });
 
 describe('web research read RPC ownership', () => {

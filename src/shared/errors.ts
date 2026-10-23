@@ -20,6 +20,7 @@ export type KydogErrorCode =
   | 'research.conflict'
   | 'project.not_found'
   | 'project.access_denied'
+  | 'project.single_project_locked'
   | 'agent.provider_error'
   | 'agent.aborted'
   | 'fs.read_failed'

@@ -9,8 +9,10 @@ import { KydogError } from '../../shared/errors';
 import { isTrashablePath, type TrashFilesArgs } from '../../shared/files';
 import { SKIP_WITHOUT_SYMLINK, SYMLINK_SKIP_REASON } from '../../test-support/symlinkCapability';
 import { trashFiles } from './trashFiles';
+import { projectService } from '../project/projectService';
 
 vi.mock('electron', () => ({ shell: { trashItem: vi.fn() } }));
+vi.mock('../browser/browserService', () => ({ browserService: {} }));
 
 let temp: string;
 let root: string;
@@ -54,6 +56,22 @@ afterEach(async () => {
 });
 
 describe('trashFiles', () => {
+  it('临时项目在 on 可移至废纸篓，off 后未登记目录不可操作，文件边界仍受校验', async () => {
+    await saveIndex({ schemaVersion: 1, projects: [], threads: [] });
+    const scope = vi.spyOn(projectService, 'singleProjectPath', 'get').mockReturnValue(root);
+    await positiveControl();
+    const valid = await document('valid.md', 'VALID');
+    const outside = await document('outside.md', 'OUTSIDE', path.join(temp, 'outside'));
+    await expect(trashFiles({ projectPath: root, paths: [valid, outside] }))
+      .rejects.toMatchObject({ code: 'fs.access_denied' });
+    expect(await fs.readFile(valid, 'utf8')).toBe('VALID');
+    scope.mockReturnValue(null);
+    await expect(trashFiles({ projectPath: root, paths: [valid] }))
+      .rejects.toMatchObject({ code: 'fs.access_denied' });
+    expect(await fs.readFile(valid, 'utf8')).toBe('VALID');
+    expect(await fs.readdir(trash)).toEqual(['control.md']);
+  });
+
   it('deduplicates original paths and moves only selected documents, preserving sidecars and attachments', async () => {
     const md = await document('report.md');
     const pdf = await document('paper.pdf', '%PDF-paper');

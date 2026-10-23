@@ -132,6 +132,7 @@ export class SettingsService {
       const ui = { ...cur.ui, ...(patch.ui ?? {}) };
       const next: SettingsFile = {
         schemaVersion: CURRENT_SCHEMA_VERSION,
+        development: cur.development,
         // browserWidth 走与读路径同一个 sanitize。不对称的代价很具体：渲染层拖拽时
         // 算错一次（比如 0）就当场进 cache 与磁盘，同一次会话里 browserService 按
         // scale = W/1280 = 0 调 setDeviceMetricsOverride，页面渲染塌掉；重启后

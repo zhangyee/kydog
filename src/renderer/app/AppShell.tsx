@@ -45,6 +45,7 @@ export function AppShell() {
         void startNewThreadInFocusedProject();
       } else if (key === 'o') {
         e.preventDefault();
+        if (useThreadsStore.getState().singleProjectPath !== null) return;
         void window.kydog.invoke('project.open').then((p) => {
           useThreadsStore.getState().addProject(p);
         }).catch((err) => console.error('open project failed', err));

@@ -1,17 +1,117 @@
 import { disposeWebResearchThread } from '../webResearch/service';
 vi.mock('../webResearch/service', () => ({ disposeWebResearchThread: vi.fn(async () => {}) }));
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync, promises as fs } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, utimesSync, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as paths from '../persist/paths';
 import { saveIndex, loadIndex } from '../persist/indexFile';
 
-vi.mock('electron', () => ({ dialog: {}, shell: {} }));
+vi.mock('electron', () => ({ dialog: { showOpenDialog: vi.fn() }, shell: {} }));
 vi.mock('../browser/browserService', () => ({ browserService: { disposeForThread: vi.fn() } }));
 
-import { projectService } from './projectService';
+import { projectService, ProjectService } from './projectService';
+import { dialog } from 'electron';
 import { browserService } from '../browser/browserService';
+
+describe('单项目模式', () => {
+  let dir: string;
+  let target: string;
+  beforeEach(async () => {
+    dir = mkdtempSync(path.join(os.tmpdir(), 'kydog-single-'));
+    target = path.join(dir, 'debug');
+    mkdirSync(target);
+    vi.spyOn(paths, 'INDEX_FILE', 'get').mockReturnValue(path.join(dir, 'index.json'));
+    await saveIndex({ schemaVersion: 1, projects: [{ path: '/other', addedAt: 'old', pinned: true }],
+      threads: [{ id: 'other-thread', projectPath: '/other', title: 'kept', createdAt: 'old', lastActiveAt: 'old' }] });
+  });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
+
+  it('临时目标不登记到普通列表，关闭模式后恢复原项目与对话', async () => {
+    const normal = new ProjectService();
+    expect((await normal.list()).map(p => p.path)).toEqual(['/other']);
+    const before = readFileSync(path.join(dir, 'index.json'), 'utf8');
+    const scoped = new ProjectService({ singleProjectPath: target });
+    const [project] = await scoped.list();
+    expect(project.path).toBe(target);
+    expect(await scoped.list()).toEqual([project]);
+    const index = await loadIndex();
+    expect(index.projects.map(p => p.path)).toEqual(['/other']);
+    expect(index.projects[0]).toEqual({ path: '/other', addedAt: 'old', pinned: true });
+    expect(index.threads.map(t => t.id)).toEqual(['other-thread']);
+    expect((await normal.list()).map(p => p.path)).toEqual(['/other']);
+    expect(readFileSync(path.join(dir, 'index.json'), 'utf8')).toBe(before);
+  });
+
+  it.each([true, false])('原已登记的目标保留元数据、顺序与正常项目身份，pinned=%s', async pinned => {
+    const index = await loadIndex();
+    const existing = { path: target, addedAt: 'original', label: '原项目', pinned };
+    index.projects.unshift(existing);
+    await saveIndex(index);
+    const scoped = new ProjectService({ singleProjectPath: target });
+    expect(await scoped.list()).toEqual([existing]);
+    expect(await new ProjectService().list()).toEqual([existing, { path: '/other', addedAt: 'old', pinned: true }]);
+    expect(await loadIndex()).toEqual(index);
+  });
+
+  it('临时项目改名与置顶只影响本次运行，普通项目更新仍落盘', async () => {
+    const normal = new ProjectService();
+    await normal.update({ projectPath: '/other', label: '正常更新', pinned: false });
+    expect((await loadIndex()).projects[0]).toMatchObject({ label: '正常更新', pinned: false });
+    const before = await loadIndex();
+    const scoped = new ProjectService({ singleProjectPath: target });
+    expect((await scoped.list())[0].path).toBe(target);
+    expect(await scoped.update({ projectPath: target, label: '临时更新', pinned: true }))
+      .toMatchObject({ path: target, label: '临时更新', pinned: true });
+    expect((await scoped.list())[0]).toMatchObject({ path: target, label: '临时更新', pinned: true });
+    expect(await loadIndex()).toEqual(before);
+    expect((await new ProjectService({ singleProjectPath: target }).list())[0])
+      .toEqual({ path: target, addedAt: expect.any(String) });
+  });
+
+  it('开启期间拒绝打开和移除项目，并保持索引不变', async () => {
+    vi.mocked(dialog.showOpenDialog).mockResolvedValue({ canceled: false, filePaths: [target] });
+    expect((await new ProjectService().open()).path).toBe(target);
+    const before = await loadIndex();
+    const scoped = new ProjectService({ singleProjectPath: target });
+    await expect(scoped.open()).rejects.toMatchObject({ code: 'project.single_project_locked' });
+    await expect(scoped.close({ projectPath: target })).rejects.toMatchObject({ code: 'project.single_project_locked' });
+    expect(await loadIndex()).toEqual(before);
+  });
+
+  it('启动时固定目标，之后修改配置对象不改变本次项目范围', async () => {
+    const config = { singleProject: { enabled: true, path: target } };
+    const service = new ProjectService();
+    await service.initialize(config);
+    config.singleProject.enabled = false;
+    config.singleProject.path = '/other';
+    expect(service.singleProjectPath).toBe(target);
+    expect((await service.list()).map(p => p.path)).toEqual([target]);
+    const restarted = new ProjectService();
+    await restarted.initialize(config);
+    expect((await restarted.list()).map(p => p.path)).toEqual(['/other']);
+  });
+
+  it.each(['', 'relative/path', 'missing', 'file'])('启动拒绝无效目标 %s，不修改原索引', async (input) => {
+    writeFileSync(path.join(dir, 'file'), 'not a directory');
+    const candidate = input === 'missing' || input === 'file' ? path.join(dir, input) : input;
+    const before = await loadIndex();
+    const service = new ProjectService();
+    await expect(service.initialize({ singleProject: { enabled: true, path: candidate } }))
+      .rejects.toMatchObject({ code: 'settings.invalid' });
+    expect(await loadIndex()).toEqual(before);
+  });
+
+  it.each(['{broken', '{"schemaVersion":999,"projects":[],"threads":[]}'])(
+    '启动临时项目时索引不可读应报错，不能拿空索引覆盖原件：%s', async raw => {
+      const file = path.join(dir, 'index.json');
+      writeFileSync(file, raw);
+      await expect(new ProjectService().initialize({ singleProject: { enabled: true, path: target } }))
+        .rejects.toMatchObject({ code: 'fs.read_failed' });
+      expect(readFileSync(file, 'utf8')).toBe(raw);
+    },
+  );
+});
 
 /**
  * 关项目会把它的对话从索引里一起摘掉 —— 那些对话名下的 agent 标签也得一起关

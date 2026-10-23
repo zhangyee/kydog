@@ -25,6 +25,32 @@ npm start       # 开发模式启动
 
 PR 请以 `mvp` 分支为基准。
 
+### 单项目开发调试
+
+调试时可把 Projects 固定为一个目录。先启动一次 KyDog 生成配置，然后在仓库内运行：
+
+```bash
+npm run dev-project on ./debug-project  # 指定已有目录并开启，相对路径按当前工作目录解析
+npm run dev-project on                  # 使用上次保存的目录开启
+npm run dev-project off                 # 关闭，保留目录设置
+npm run dev-project status              # 查看磁盘上的配置状态
+```
+
+也可以直接编辑 `~/.kydog/kydog.json` 中的以下字段；缺少这项配置时默认关闭：
+
+```json
+"development": {
+  "singleProject": { "enabled": true, "path": "/absolute/path/to/debug-project" }
+}
+```
+
+开关和目标目录都在**重启 KyDog 后生效**，窗口刷新不切换模式。开启时只展示目标项目及其对话，
+不能添加其他项目或移除目标；其他项目、对话与折叠状态保留。调试目录作为临时项目展示，不加入普通项目列表；
+关闭后恢复开启前的项目列表。调试对话继续保存，关闭时隐藏，再次开启同一目录即可恢复。
+如果目标原本就在普通项目列表中，关闭后仍保留。临时项目的改名与置顶仅本次运行有效。
+目标无效时启动报错，可用 `off` 恢复。
+这项设置限定工作区的项目列表，不限制 Agent 的文件访问范围。
+
 ## 网页研究的浏览器读取与人工继续
 
 持久网页研究任务先读取 HTTP 正文；遇到明确的 `needs_browser`，或最终域名为 `blog.csdn.net` 的 HTTP 521 时，自动用内置浏览器的任务专用后台标签尝试一次。动态文章正文取得后沿用原来源进入主张和证据提取，原始 HTTP 状态与浏览器响应状态分别保留。

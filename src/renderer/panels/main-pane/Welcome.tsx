@@ -5,6 +5,7 @@ import type { Project } from '../../../shared/types';
 
 export function Welcome() {
   const projects = useThreadsStore((s) => s.projects);
+  const singleProjectPath = useThreadsStore((s) => s.singleProjectPath);
 
   const onOpen = async (): Promise<Project | null> => {
     try {
@@ -62,6 +63,7 @@ export function Welcome() {
         <button
           type="button"
           data-testid="welcome-open-folder"
+          disabled={singleProjectPath !== null}
           onClick={onOpen}
           className="group font-sans flex items-center gap-2 bg-[color:var(--color-paper)] transition-colors hover:bg-[color:var(--color-hover-bg)]"
           style={{
@@ -70,7 +72,8 @@ export function Welcome() {
             color: 'var(--color-ink)',
             border: '0.5px solid var(--color-ink-hair)',
             borderRadius: 4,
-            cursor: 'pointer',
+            cursor: singleProjectPath ? 'default' : 'pointer',
+            opacity: singleProjectPath ? 0.5 : undefined,
             boxShadow: '0 1px 0 var(--color-card-shadow)',
           }}
         >

@@ -4,6 +4,7 @@ import { shell } from 'electron';
 import { KydogError, serializeError } from '../../shared/errors';
 import { isTrashablePath, type TrashFilesArgs, type TrashFilesResult } from '../../shared/files';
 import { loadIndex } from '../persist/indexFile';
+import { projectService } from '../project/projectService';
 
 function errorDetail(err: unknown): string {
   const code = (err as NodeJS.ErrnoException | null)?.code;
@@ -31,7 +32,8 @@ export async function trashFiles(args: TrashFilesArgs): Promise<TrashFilesResult
   }
   const targets = [...new Set(args.paths)];
   const index = await loadIndex();
-  if (!index.projects.some((project) => project.path === args.projectPath)) {
+  if (projectService.singleProjectPath !== args.projectPath
+    && !index.projects.some((project) => project.path === args.projectPath)) {
     throw new KydogError('fs.access_denied', `项目未登记：${args.projectPath}`);
   }
 

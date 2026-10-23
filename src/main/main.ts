@@ -19,6 +19,7 @@ import { applyResearchEnv } from './research/researchEnv';
 import { initProviderRegistry, setCatalogRefreshedHook } from './llm/providerRegistry';
 import { llmService } from './llm/llmService';
 import { fileWatcherService } from './project/fileWatcher';
+import { projectService } from './project/projectService';
 import { destroyRasterWindow } from './pdf/pdfRaster';
 import { destroyMdPrintWindow } from './markdown/mdPdfExport';
 import { startIdentityWatcher } from './harness/identityService';
@@ -168,6 +169,7 @@ app.on('ready', async () => {
     ensureSettingsFile();
 
     const _initialSettings = await settingsService.get();
+    await projectService.initialize(_initialSettings.development);
     applyCloudEnv(_initialSettings.llm.providers);
     applyResearchEnv(_initialSettings.research);
     // 必须排在 initProviderRegistry 之前：build() 里那次后台目录刷新就是从它开始飞的。

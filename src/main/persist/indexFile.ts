@@ -3,21 +3,27 @@ import { atomicWrite } from './atomicWrite';
 import * as paths from './paths';
 import type { IndexFile } from '../../shared/types';
 import { logger } from '../log';
+import { KydogError } from '../../shared/errors';
 
 export function defaultIndex(): IndexFile {
   return { schemaVersion: 1, projects: [], threads: [] };
 }
 
-export async function loadIndex(): Promise<IndexFile> {
+/** strict 用于调试项目初始化与写入：仅 ENOENT 可视为空，不能用空索引掩盖读取失败。 */
+export async function loadIndex({ strict = false }: { strict?: boolean } = {}): Promise<IndexFile> {
   try {
     const raw = await fs.readFile(paths.INDEX_FILE, 'utf8');
     const parsed = JSON.parse(raw) as IndexFile;
     if (parsed && parsed.schemaVersion === 1 && Array.isArray(parsed.projects) && Array.isArray(parsed.threads)) {
       return parsed;
     }
+    if (strict) throw new Error('project index shape mismatch');
     logger.warn('persist.indexFile', 'load failed; returning defaults', { reason: 'shape mismatch' });
     return defaultIndex();
   } catch (err) {
+    if (strict && (err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new KydogError('fs.read_failed', '无法读取项目索引，原文件未修改。', err);
+    }
     logger.warn('persist.indexFile', 'load failed; returning defaults', { err: String(err) });
     return defaultIndex();
   }

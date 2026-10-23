@@ -19,6 +19,27 @@ describe('SettingsService (v2 + proper-lockfile)', () => {
   });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
+  it('保留手改的单项目开关，包括普通设置更新与重新读取之后', async () => {
+    const file = path.join(dir, 'kydog.json');
+    const initial = JSON.parse(readFileSync(file, 'utf8'));
+    initial.development = { singleProject: { enabled: true, path: '/debug/project' } };
+    writeFileSync(file, JSON.stringify(initial));
+    expect((await svc.get()).development).toEqual({ singleProject: { enabled: true, path: '/debug/project' } });
+    await svc.update({ ui: { readingFontSize: 'large' } });
+    expect(JSON.parse(readFileSync(file, 'utf8')).development)
+      .toEqual({ singleProject: { enabled: true, path: '/debug/project' } });
+    expect((await new SettingsService().get()).development)
+      .toEqual({ singleProject: { enabled: true, path: '/debug/project' } });
+  });
+
+  it('缺少开发配置的旧文件默认关闭单项目模式', async () => {
+    const file = path.join(dir, 'kydog.json');
+    const initial = JSON.parse(readFileSync(file, 'utf8'));
+    delete initial.development;
+    writeFileSync(file, JSON.stringify(initial));
+    expect((await svc.get()).development).toEqual({ singleProject: { enabled: false, path: null } });
+  });
+
   it('replaceResearch reports committed changes under the settings lock', async () => {
     const input = { presets: { NCBI_API_KEY: 'kept' }, custom: [], xResearchEnabled: true };
     expect((await svc.replaceResearch(input)).xResearchEnabledChanged).toBe(true);

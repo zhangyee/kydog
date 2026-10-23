@@ -6,6 +6,7 @@ import { useThreadsStore } from '../../stores/threadsStore';
 export function ProjectsHeaderActions() {
   const collapseAll = useUiStore((s) => s.collapseAllProjects);
   const projects = useThreadsStore((s) => s.projects);
+  const singleProjectPath = useThreadsStore((s) => s.singleProjectPath);
   const groupBy = useUiStore((s) => s.projectsGroupBy);
   const sortBy = useUiStore((s) => s.projectsSortBy);
   const setGroupBy = useUiStore((s) => s.setProjectsGroupBy);
@@ -93,6 +94,7 @@ export function ProjectsHeaderActions() {
         tooltip="添加新项目"
         ariaLabel="添加新项目"
         testId="add-project-trigger"
+        disabled={singleProjectPath !== null}
         onClick={onAddProject}
       >
         <NavIcon name="folder-plus" size={14} />

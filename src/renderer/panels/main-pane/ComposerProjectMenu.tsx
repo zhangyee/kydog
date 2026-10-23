@@ -14,6 +14,7 @@ type Props = {
 export function ComposerProjectMenu({ threadId, currentProjectPath, anchorRect, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const projects = useThreadsStore((s) => s.projects);
+  const singleProjectPath = useThreadsStore((s) => s.singleProjectPath);
   const upsertThread = useThreadsStore((s) => s.upsertThread);
   const [error, setError] = useState<string | null>(null);
 
@@ -111,9 +112,10 @@ export function ComposerProjectMenu({ threadId, currentProjectPath, anchorRect, 
       <button
         type="button"
         data-testid="project-item-open-other"
+        disabled={singleProjectPath !== null}
         onMouseDown={(e) => { e.preventDefault(); void onOpenOther(); }}
         className="font-serif w-full text-left"
-        style={{ padding: '6px 14px', background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', gap: 8, alignItems: 'center', color: 'var(--color-ink-soft)' }}
+        style={{ padding: '6px 14px', background: 'transparent', border: 'none', cursor: singleProjectPath ? 'default' : 'pointer', opacity: singleProjectPath ? 0.5 : undefined, display: 'flex', gap: 8, alignItems: 'center', color: 'var(--color-ink-soft)' }}
       >
         <NavIcon name="folder-plus" size={12} />
         <span style={{ fontSize: 12 }}>打开其他文件夹…</span>

@@ -20,6 +20,7 @@ export function ProjectRow({ project, expanded, onToggleExpand }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const setProject = useThreadsStore((s) => s.setProject);
   const removeProject = useThreadsStore((s) => s.removeProject);
+  const singleProjectPath = useThreadsStore((s) => s.singleProjectPath);
 
   useEffect(() => {
     if (renaming) {
@@ -185,6 +186,7 @@ export function ProjectRow({ project, expanded, onToggleExpand }: Props) {
               label="移除"
               destructive
               testId={`project-remove-${baseName}`}
+              disabled={singleProjectPath !== null}
               onClick={() => void onRemove()}
             />
           </DropdownMenu>

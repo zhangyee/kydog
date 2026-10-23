@@ -105,6 +105,7 @@ export function registerAllHandlers(): void {
     return {
       // 不是原样的 settings：密文不过河，见 toRendererSettings
       settings: toRendererSettings(settings), projects, threads,
+      singleProjectPath: projectService.singleProjectPath,
       appVersion: app.getVersion(),
       systemLocale: mapSystemLocale(app.getLocale()),
       identity, onboardingRecovery,

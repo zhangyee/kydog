@@ -37,6 +37,7 @@ const SETTINGS: SettingsFileForRenderer = {
 };
 
 const BOOT: BootstrapState = {
+  singleProjectPath: null,
   projects: [],
   threads: [],
   settings: SETTINGS,

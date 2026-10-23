@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { Project, Thread, Message } from '../../shared/types';
 
 type ThreadsState = {
+  singleProjectPath: string | null;
   projects: Project[];
   threadsByProject: Record<string, Thread[]>;
   currentThreadId: string | null;
@@ -19,7 +20,7 @@ type ThreadsState = {
    */
   focusedProjectPath: string | null;
   historyByThread: Record<string, Message[]>;
-  hydrate: (projects: Project[], threads: Thread[]) => void;
+  hydrate: (projects: Project[], threads: Thread[], singleProjectPath?: string | null) => void;
   selectThread: (threadId: string | null) => void;
   /** 打开项目之后放进列表（已在就挪到末尾，同改动前各入口的写法），并让它成为当前项目。 */
   addProject: (project: Project) => void;
@@ -55,13 +56,14 @@ function findThread(threadsByProject: Record<string, Thread[]>, threadId: string
 }
 
 export const useThreadsStore = create<ThreadsState>((set) => ({
+  singleProjectPath: null,
   projects: [],
   threadsByProject: {},
   currentThreadId: null,
   threadNavigationRevision: 0,
   focusedProjectPath: null,
   historyByThread: {},
-  hydrate: (projects, threads) => set({ projects, threadsByProject: bucketize(threads) }),
+  hydrate: (projects, threads, singleProjectPath = null) => set({ projects, threadsByProject: bucketize(threads), singleProjectPath }),
   selectThread: (threadId) => set((s) => {
     const thread = threadId ? findThread(s.threadsByProject, threadId) : undefined;
     return {

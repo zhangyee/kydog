@@ -25,7 +25,7 @@ let unsubscribeUiPersist: (() => void) | null = null;
 
 export async function bootstrap(): Promise<void> {
   const state = await window.kydog.invoke('app.bootstrap');
-  useThreadsStore.getState().hydrate(state.projects, state.threads);
+  useThreadsStore.getState().hydrate(state.projects, state.threads, state.singleProjectPath);
   useSettingsStore.getState().setSettings(state.settings);
   useSettingsStore.getState().setAppVersion(state.appVersion);
   useIdentityStore.getState().setIdentity(state.identity);
@@ -38,6 +38,10 @@ export async function bootstrap(): Promise<void> {
   // 落盘的收起记录里，指向已被移除的 project 的那些留着也没人再读，
   // 只会随着开开关关无限长；在唯一知道当前 project 全集的地方剪掉。
   const knownProjects = new Set(state.projects.map((p) => p.path));
+  // 单项目模式下，未展示的项目只是隐藏，不能把它们的折叠记录当成已删除而清掉。
+  const hiddenCollapsed = state.singleProjectPath
+    ? state.settings.ui.collapsedProjects.filter(p => !knownProjects.has(p))
+    : [];
   useUiStore.setState({
     theme: state.settings.ui.theme,
     readingFontSize: state.settings.ui.readingFontSize,
@@ -86,7 +90,7 @@ export async function bootstrap(): Promise<void> {
         workspaceCollapsed: s.workspaceCollapsed,
         inspectorCollapsed: s.inspectorCollapsed,
         readingFontSize: s.readingFontSize,
-        collapsedProjects: [...s.collapsedProjects],
+        collapsedProjects: [...new Set([...hiddenCollapsed, ...s.collapsedProjects])],
         browserOpen: s.browserOpen,
         browserWidth: s.browserWidth,
         mdExport: s.mdExport,

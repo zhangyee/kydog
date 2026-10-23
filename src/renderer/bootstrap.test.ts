@@ -57,6 +57,7 @@ const SETTINGS: SettingsFileForRenderer = {
 };
 
 const BOOT: BootstrapState = {
+  singleProjectPath: null,
   projects: [],
   threads: [],
   settings: SETTINGS,
@@ -153,6 +154,36 @@ beforeEach(() => {
 });
 
 afterEach(() => { delete (globalThis as unknown as Record<string, unknown>).window; });
+
+it('使用主进程的本次项目范围；隐藏项目的折叠记录在展开和全部收起后仍保留', async () => {
+  const original = { projects: BOOT.projects, development: SETTINGS.development, collapsed: SETTINGS.ui.collapsedProjects };
+  try {
+    BOOT.projects = [{ path: '/debug', addedAt: '1' }];
+    BOOT.singleProjectPath = '/debug';
+    // 磁盘已关闭、这次进程仍开启：界面须以启动时的有效范围为准。
+    SETTINGS.development = { singleProject: { enabled: false, path: '/next-start' } };
+    SETTINGS.ui.collapsedProjects = ['/other', '/debug'];
+    await bootstrap();
+    expect(useThreadsStore.getState().singleProjectPath).toBe('/debug');
+    expect([...useUiStore.getState().collapsedProjects]).toEqual(['/debug']);
+    calls = [];
+    useUiStore.getState().toggleProject('/debug');
+    const patches = () => calls.filter(c => c.method === 'settings.update').map(c => c.args as { ui: { collapsedProjects: string[] } });
+    expect(patches().at(-1)?.ui.collapsedProjects).toEqual(['/other']);
+    useUiStore.getState().collapseAllProjects(['/debug']);
+    expect(patches().at(-1)?.ui.collapsedProjects).toEqual(['/other', '/debug']);
+    // 普通模式仍清理真正已经移除的项目记录。
+    BOOT.singleProjectPath = null;
+    await bootstrap();
+    useUiStore.getState().toggleProject('/debug');
+    expect(patches().at(-1)?.ui.collapsedProjects).toEqual([]);
+  } finally {
+    BOOT.projects = original.projects;
+    BOOT.singleProjectPath = null;
+    SETTINGS.development = original.development;
+    SETTINGS.ui.collapsedProjects = original.collapsed;
+  }
+});
 
 describe('bootstrap 把 settingsHealth 接进了 store', () => {
   /**

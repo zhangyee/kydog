@@ -171,6 +171,8 @@ export type TelemetryStatus = {
 
 export type SettingsFile = {
   schemaVersion: 9;
+  /** 开发调试配置；缺省关闭。只由配置文件/开发脚本修改，重启生效。 */
+  development?: { singleProject: { enabled: boolean; path: string | null } };
   ui: {
     theme: ThemeName;
     locale: 'zh' | 'en';
@@ -359,6 +361,8 @@ export type SettingsHealth =
   | { kind: 'unreadable'; why: string };
 
 export type BootstrapState = {
+  /** 本次主进程启动时确定的范围；独立于等待下次启动生效的磁盘设置。 */
+  singleProjectPath: string | null;
   projects: Project[];
   threads: Thread[];
   /** 不是 SettingsFile：这份是发给渲染层的，密文不过河。见 SettingsFileForRenderer。 */

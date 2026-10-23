@@ -6,6 +6,7 @@ import { agentService } from '../agent/AgentService';
 import { browserService } from '../browser/browserService';
 import { questionBroker } from '../agent/questionBroker';
 import { KydogError } from '../../shared/errors';
+import { projectService } from '../project/projectService';
 import { turnTitleSource } from '../../shared/userTurn';
 import { researchRunStore } from '../webResearch/runStore';
 import { xResearchTaskStore } from '../x/xResearchTaskStore';
@@ -15,20 +16,39 @@ import type { EventSink } from '../ipc/broadcaster';
 import type { Thread, Message, IndexFile, MessageImage } from '../../shared/types';
 
 export class ThreadService {
+  constructor(private readonly scope: { readonly singleProjectPath: string | null } = projectService) {}
+
+  private allows(projectPath: string): boolean {
+    return this.scope.singleProjectPath === null || this.scope.singleProjectPath === projectPath;
+  }
+
+  private isOpen(idx: IndexFile, projectPath: string): boolean {
+    return this.scope.singleProjectPath !== null
+      ? this.scope.singleProjectPath === projectPath
+      : idx.projects.some(p => p.path === projectPath);
+  }
+
+  private assertAllowed(projectPath: string): void {
+    if (!this.allows(projectPath)) {
+      throw new KydogError('project.single_project_locked', '开发调试模式只允许使用配置的项目；请修改配置并重启 KyDog。');
+    }
+  }
+
   async list({ projectPath }: { projectPath: string }): Promise<Thread[]> {
     const idx = await loadIndex();
-    return idx.threads.filter((t) => t.projectPath === projectPath);
+    return idx.threads.filter((t) => t.projectPath === projectPath && this.isOpen(idx, t.projectPath));
   }
 
   async listAll(): Promise<Thread[]> {
     const idx = await loadIndex();
-    return idx.threads;
+    return idx.threads.filter(t => this.isOpen(idx, t.projectPath));
   }
 
   async create({ projectPath, title }: { projectPath: string; title?: string }): Promise<Thread> {
+    this.assertAllowed(projectPath);
     return withIndexLock(async () => {
-      const idx = await loadIndex();
-      if (!idx.projects.find((p) => p.path === projectPath)) {
+      const idx = await loadIndex({ strict: this.scope.singleProjectPath !== null });
+      if (!this.isOpen(idx, projectPath)) {
         throw new KydogError('project.not_found', `project ${projectPath} is not opened`);
       }
       const now = new Date().toISOString();
@@ -142,6 +162,7 @@ export class ThreadService {
     modelOverride?: { providerId: string; modelId: string } | null;
     projectPath?: string;
   }): Promise<Thread> {
+    if (args.projectPath !== undefined) this.assertAllowed(args.projectPath);
     return withIndexLock(async () => {
       const idx = await loadIndex();
       const thread = idx.threads.find((t) => t.id === args.threadId);
@@ -151,7 +172,7 @@ export class ThreadService {
         if (history.length > 0) {
           throw new KydogError('thread.has_messages', `thread ${args.threadId} already has messages`);
         }
-        if (!idx.projects.find((p) => p.path === args.projectPath)) {
+        if (!this.isOpen(idx, args.projectPath)) {
           throw new KydogError('project.not_found', `project ${args.projectPath} is not opened`);
         }
         // 拆掉这条对话缓存的 session：工具的 cwd 与 transcript 的落盘目录都在建 session 那一刻

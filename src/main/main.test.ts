@@ -1,7 +1,7 @@
 import { shutdownWebResearch } from './webResearch/service';
 vi.mock('./webResearch/service', () => ({ shutdownWebResearch: vi.fn(async () => {}) }));
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -111,6 +111,7 @@ vi.mock('electron-squirrel-startup', () => ({ default: false }));
 // ── main.ts 启动期那一长串副作用，与浏览器接线无关，全部替身 ──────────────────
 vi.mock('./persist/paths', () => ({
   ROOT: TMP,
+  INDEX_FILE: path.join(TMP, 'index.json'),
   SESSIONS_DIR: path.join(TMP, 'sessions'),
   LOGS_DIR: path.join(TMP, 'logs'),
   STAGING_DIR: path.join(TMP, 'staging'),
@@ -133,6 +134,7 @@ vi.mock('./skills/skillSyncStateHolder', () => ({ skillSyncStateHolder: { runFor
 vi.mock('./settings/settingsService', () => ({
   settingsService: {
     get: async () => ({
+      development: { singleProject: { enabled: true, path: path.join(TMP, 'debug') } },
       llm: { providers: {} },
       research: {},
       ui: { locale: 'zh' },
@@ -184,6 +186,9 @@ type FakeWin = InstanceType<typeof H.FakeBrowserWindow>;
 let win: FakeWin;
 
 beforeAll(async () => {
+  mkdirSync(path.join(TMP, 'debug'));
+  writeFileSync(path.join(TMP, 'index.json'), JSON.stringify({ schemaVersion: 1,
+    projects: [{ path: '/other', addedAt: 'old' }], threads: [] }));
   // forge 的 vite 插件在构建期把这两个 define 进去；单测里它们是自由标识符，
   // 不给就是 ReferenceError。走 dev-server 分支（loadURL），免得碰 __dirname 拼路径。
   vi.stubGlobal('MAIN_WINDOW_VITE_DEV_SERVER_URL', 'http://localhost:5173/');
@@ -203,6 +208,13 @@ beforeAll(async () => {
 });
 
 afterAll(() => { vi.unstubAllGlobals(); rmSync(TMP, { recursive: true, force: true }); });
+
+it('启动时真正应用临时单项目配置，磁盘仍只登记原项目', async () => {
+  const { projectService } = await import('./project/projectService');
+  expect((await projectService.list()).map(p => p.path)).toEqual([path.join(TMP, 'debug')]);
+  expect(JSON.parse(readFileSync(path.join(TMP, 'index.json'), 'utf8')).projects.map((p: { path: string }) => p.path))
+    .toEqual(['/other']);
+});
 
 /**
  * **出网路径的守卫。** 失败形态是静默的：把 `installProxyDispatcher` 整行删掉、或者挪到
