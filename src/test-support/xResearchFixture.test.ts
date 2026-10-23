@@ -31,3 +31,24 @@ it('closes its disposable page even when the evaluation request is invalid', asy
     expect(captured!.document).toBeUndefined();
   } finally { spy.mockRestore(); }
 });
+
+it('reuses one page VM across collection frames while replacing the observed document', async () => {
+  const getWindow = Object.getOwnPropertyDescriptor(JSDOM.prototype, 'window')!.get!;
+  const windows = new Set<JSDOM['window']>();
+  const spy = vi.spyOn(JSDOM.prototype, 'window', 'get').mockImplementation(function (this: JSDOM) {
+    const window = getWindow.call(this) as JSDOM['window'];
+    windows.add(window);
+    return window;
+  });
+  try {
+    const f = fixture([readHtml(post()+post('456','bob','first frame')),readHtml(post()+post('789','bob','second frame'))]);
+    await f.context.browser.open('https://x.com/alice/status/123', undefined);
+    const request = { stage: 'post' as const, postId: '123', expectedUrl: 'https://x.com/alice/status/123' };
+    const first = await f.collect(request);
+    await f.act({ kind: 'scroll' });
+    const second = await f.collect(request);
+    expect(first.replies.map(p=>p.text)).toEqual(['first frame']);
+    expect(second.replies.map(p=>p.text)).toEqual(['second frame']);
+    expect(windows.size).toBe(1);
+  } finally { spy.mockRestore(); }
+});

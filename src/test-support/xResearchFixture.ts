@@ -6,10 +6,10 @@ import { decodeXPage, xPageExpression, type XPageRequest } from '../main/x/xPage
 import type { XResearchBrowser, XQueuedPage } from '../main/x/xResearchBrowser';
 import type { XResearchContext } from '../main/x/xResearchSearch';
 
-const stagedPages = new Set<JSDOM>();
+const fixturePages = new Set<JSDOM>();
 afterEach(() => {
-  for (const dom of stagedPages) dom.window.close();
-  stagedPages.clear();
+  for (const dom of fixturePages) dom.window.close();
+  fixturePages.clear();
 });
 
 export const query = { id:'q2', query:'scientific agents', purpose:'find accounts', product:'Latest' as const };
@@ -22,13 +22,22 @@ export const readHtml = (body:string) => `<main><div data-testid="primaryColumn"
 export function fixture(pages:string[], options:{finalUrl?:(url:string)=>string; collectErrorAt?:number; scrollError?:Error; wait?:boolean; afterWaitIndex?:number; unscopedAfterIndex?:number}={}) {
   let url='https://x.com/home', index=0, collects=0, revision=7, sequence=9;
   let readProof:import('../main/x/xNetworkSource').XNetworkProvenance|undefined;
+  let current:JSDOM|undefined;
   const collect = vi.fn(async (request:XPageRequest) => {
     if (collects++===options.collectErrorAt) throw new TypeError('broken adapter');
     const html=pages[Math.min(index,pages.length-1)];
-    const dom=new JSDOM(html,{url,runScripts:'outside-only'});
+    if (!current) {
+      current=new JSDOM('',{url,runScripts:'outside-only'});
+      fixturePages.add(current);
+      Object.defineProperty(current.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
+      Object.defineProperty(current.window.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
+    }
+    const dom=current;
     try {
-    Object.defineProperty(dom.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
-    Object.defineProperty(dom.window.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
+    // A browser page has one VM across frames; collection replaces its document
+    // instead of booting hundreds of complete VM contexts for budget tests.
+    dom.reconfigure({url});
+    dom.window.document.open();dom.window.document.write(html);dom.window.document.close();
     // Electron transfers data out of the page's JS realm. Keeping eval objects
     // here instead retains that VM through observations and vi.fn results.
     const raw=structuredClone(dom.window.eval(xPageExpression(request)));
@@ -75,7 +84,10 @@ export function fixture(pages:string[], options:{finalUrl?:(url:string)=>string;
       observation.network={pages:[networkPage],proof:readProof??provenance};
     }
     return observation;
-    } finally { dom.window.close(); }
+    } catch (error) {
+      dom.window.close();fixturePages.delete(dom);current=undefined;
+      throw error;
+    }
   });
   const act=vi.fn(async (action:any, _snapshot?:unknown, actOptions?:import('../main/x/xResearchBrowser').XActionOptions) => {
     if(options.scrollError) throw options.scrollError;
@@ -108,9 +120,9 @@ export async function stagedFixture(options: { semanticLabels?: boolean; scrollE
   const parent=()=>readHtml(post('123','alice',expanded?'expanded body':'preview').replace('</article>',(expanded?'':bodyButton)+(options.article?entry:'')+'</article>')+(discussionReady?post('789','carol','first reply')+(replies?post('790','dave','second reply'):replyButton):'')+(options.semanticLabels?`<div role="status">${expanded?'terminal End of conversation':'initial 回复'}</div>`:''));
   const render=(html:string)=>{
     current?.window.close();
-    stagedPages.delete(current);
+    fixturePages.delete(current);
     current=new JSDOM(html,{url,runScripts:'outside-only'});
-    stagedPages.add(current);
+    fixturePages.add(current);
     Object.defineProperty(current.window.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({left:0,top:0,width:100,height:30,right:100,bottom:30})});
     Object.defineProperty(current.window.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
   };
