@@ -15,15 +15,21 @@ import { XResearchTaskService } from './xResearchTaskService';
 import { XResearchTaskStore } from './xResearchTaskStore';
 import type { XResearchDeliveryEnvelope } from './xResearchTaskShell';
 import type { XResearchResult } from './xResearchTypes';
+import type { XPageObservation } from './xObservation';
+import type { XNetworkReadPage } from './xNetworkSource';
 import { createXResearchTools } from '../agent/xResearchTools';
 
 const roots: string[] = [];
+const cleanups: Array<() => Promise<void>> = [];
 function root(): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'x-budget-'));
   roots.push(dir);
   return dir;
 }
-afterEach(() => { for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup();
+  for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 const target = { url: 'https://x.com/alice/status/123' };
 
@@ -33,6 +39,7 @@ type FixtureContext = ReturnType<typeof fixture>['context'];
 function toolFor(f: { context: FixtureContext }) {
   const threadId = randomUUID();
   const ledger = new XResearchScopeLedger();
+  const artifacts = tempXArtifactStore();
   const service = new XResearchTaskService({
     store: new XResearchTaskStore(root()),
     runWork: createXResearchRunner({
@@ -42,11 +49,12 @@ function toolFor(f: { context: FixtureContext }) {
         scopePrior: (runId) => ledger.prior(runId),
         currentRunId: () => 'budget-run',
       }),
-      artifacts: () => tempXArtifactStore(),
+      artifacts: () => artifacts,
     }),
     onUpdate: () => undefined,
-    artifacts: () => tempXArtifactStore(),
+    artifacts: () => artifacts,
   });
+  cleanups.push(() => service.disposeThread(threadId));
   const tool = createXResearchTools({
     service, threadId, projectRoot: '/projects/x', currentRunId: () => 'budget-run',
     observeDelivery: () => undefined,
@@ -72,12 +80,55 @@ function bodies(start: number, count: number) {
   return Array.from({ length: count }, (_, i) => post(String(start + i), 'bob', `body-${start + i}`)).join('');
 }
 
+/** Budget orchestration needs complete source observations, not hundreds of HTML parses.
+ * Decode one real DOM/control frame, then supply explicit network DTO pages at this
+ * existing browser boundary. DOM extraction and wire decoding have their own suites.
+ * Every action still runs through submit → runner → collector → wait; no budget is lowered.
+ */
+function budgetFixture(options: { kind: 'search' | 'read'; count: number; frames: number; rootLast?: boolean; expand?: boolean }) {
+  const initialReplies = bodies(1000, options.count);
+  const initialBody = options.kind === 'search' ? initialReplies
+    : options.rootLast ? initialReplies + post('123', 'alice', 'focal body')
+      : post('123', 'alice', 'focal body') + initialReplies;
+  const f = fixture([options.kind === 'search' ? searchHtml(initialBody)
+    : readHtml(initialBody + (options.expand ? '<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>' : ''))]);
+  const decodeInitialFrame = f.collect.getMockImplementation()!;
+  let template: XPageObservation | undefined;
+  f.collect.mockImplementation(async request => {
+    template ??= await decodeInitialFrame(request);
+    const frame = Math.min(f.act.mock.calls.length, options.frames - 1);
+    const source = template.network!.pages[0];
+    const readSource = options.kind === 'read' ? source as XNetworkReadPage : undefined;
+    const provenance = { ...source.provenance, requestRef: `budget-frame-${frame}` };
+    const seeds = readSource ? readSource.replies : source.posts;
+    const posts = seeds.map((seed, i) => {
+      const id = String(1000 + frame * options.count + i);
+      const text = options.expand ? `body-${frame}` : `body-${id}`;
+      return { ...structuredClone(seed), observationId: randomUUID(), postId: id,
+        sourceUrl: `https://x.com/bob/status/${id}`, text, networkProvenance: provenance,
+        truncation: { returned: text.length, totalKnown: text.length, truncated: false } };
+    });
+    const root = readSource?.root ? { ...structuredClone(readSource.root), networkProvenance: provenance } : null;
+    const network = { ...source, provenance, inputCursor: frame ? `frame-${frame - 1}` : null,
+      outputCursor: `frame-${frame}`, posts: root ? options.rootLast ? [...posts, root] : [root, ...posts] : posts,
+      ...(options.kind === 'read' ? { root, replies: posts } : {}) };
+    // Keep the complete decoded control/snapshot contract; the network observations
+    // are the declared changing input, while the same expansion button remains live.
+    const result = { ...template, root, posts: options.kind === 'search' ? posts : [],
+      replies: options.kind === 'read' ? posts : [], network: { pages: [network], proof: provenance } };
+    for (const key of ['snapshot', 'articleParentInventories', 'entryParents'] as const) {
+      Object.defineProperty(result, key, { value: template[key], enumerable: false });
+    }
+    return result;
+  });
+  return f;
+}
+
 describe('ordinary research budgets through the submit path', () => {
   // Catch the old 20-scroll/100-body default and overrides that silently raise an explicit cap.
   it.each([3, 7])('search reaches 500 bodies beyond twenty scrolls, stopping each supplied dimension (%i bodies/frame)', async count => {
-    const pages = Array.from({ length: 168 }, (_, i) => searchHtml(bodies(1000 + i * count, count)));
     const run = async (caps: { maxPostsPerQuery?: number; maxScrollsPerQuery?: number }) => {
-      const f = fixture(pages);
+      const f = budgetFixture({ kind: 'search', count, frames: 168 });
       const { result } = await toolFor(f)({ search: { objective: 'research', queries: [query], ...caps } });
       if (result.operation !== 'search') throw new Error('search result expected');
       const row = result.queries[0];
@@ -114,13 +165,8 @@ describe('ordinary research budgets through the submit path', () => {
   // Moving the root behind the replies prevents fixture order from proving the wrong identity.
   it.each([false, true])('read continues beyond old limits with exact source identity and unknown scope (rootLast=%s)', async rootLast => {
     for (const count of [3, 7]) {
-      const pages = Array.from({ length: 168 }, (_, i) => {
-        const root = post('123', 'alice', 'focal body');
-        const replies = bodies(1000 + i * count, count);
-        return readHtml(rootLast ? replies + root : root + replies);
-      });
       const run = async (caps: { maxRepliesPerPost?: number; maxScrollsPerPost?: number }) => {
-        const f = fixture(pages);
+        const f = budgetFixture({ kind: 'read', count, frames: 168, rootLast });
         const { result } = await toolFor(f)({ read: { objective: 'read', targets: [target], includeArticle: false, ...caps } });
         if (result.operation !== 'read') throw new Error('read result expected');
         const row = result.targets[0];
@@ -160,9 +206,8 @@ describe('ordinary research budgets through the submit path', () => {
   }, 30000);
 
   it('uses five hundred expansion actions by default and honors an explicit six or zero before the next action', async () => {
-    const pages = Array.from({ length: 501 }, (_, i) => readHtml(post() + post(String(1000 + i), 'bob', `body-${i}`) + '<div data-testid="cellInnerDiv"><button role="button" type="button">Show replies</button></div>'));
     const run = async (maxExpandActionsPerPost?: number) => {
-      const f = fixture(pages);
+      const f = budgetFixture({ kind: 'read', count: 1, frames: 501, expand: true });
       const { result } = await toolFor(f)({
         read: {
           objective: 'expand', targets: [target], includeArticle: false, maxRepliesPerPost: 1000,
