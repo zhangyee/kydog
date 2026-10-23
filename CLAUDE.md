@@ -34,13 +34,17 @@ E2E（Playwright + Electron，需要先打包）：
 - `npm run cli:update` — 检查上游 CLI 新版本 + 同步其 skill 到 `src/skills/`，逐项 `[y/N]` 确认（交互式）
 - `npm run cli:update fastpaper@0.2.1` — 钉到指定版本（可回退），skill 跟着走同一个 tag；用位置参数，别写 `--tool`（npm 会吞掉它）
 
-## 发版门槛：同一提交先演练，全绿后才打 tag
+## 发版流程：同一提交演练 → tag CI → Release 草稿 → 用户手动发布
 
+- **发版任务要跟进到草稿交付**：用户要求“推送 GitHub 并 tag 某版本”时，默认包含下述完整流程；只推送 `main` 或只推送 tag，不能当作发版任务完成。用户明确只要求其中一步时，按该范围执行。
 - **本地和 CI 共用项目的 Node 版本**：以 `.nvmrc` 为统一来源（目前 24），CI 的 `setup-node` 也从它读取。版本选择须结合本机开发环境、Electron 内置 Node 和依赖支持范围；不把旧 CI 配置当成必须迁就的标准。升级时一起改、一起验证。
 - **主动维护 CI 操作系统镜像**：采用受支持的新稳定 runner，并结合本机开发系统评估升级（目前为 `macos-26`、`macos-26-intel`、`windows-latest`）。旧镜像不能未经用户确认就被当成必须保留的兼容基线；需要覆盖旧系统时，单独明确兼容目标和矩阵成本。Node 与操作系统分别评估，修改运行时后完整演练三平台。
 - **本地预检只负责提前发现本机可复现的问题**：用上述 Node 运行类型检查、lint 和全量单测；另设 `CI=1`、`KYDOG_REQUIRE_SYMLINK=1` 并用 `--max-old-space-size=2048` 做资源回归检查。2 GB 是额外压力条件，不是假装 macOS 能模拟 Windows/Intel。不要临时加大堆、放宽 timeout 或减少测试来制造绿灯；另外两个平台仍必须由真实 runner 验证。
 - **先定候选提交，再跑三平台**：把版本号等全部改完并提交，记录完整 SHA，推送候选分支，然后 `gh workflow run release.yml --ref <候选分支>`。核对该次 run 的 `headSha` **等于候选 SHA**，三个 build 矩阵项全部 `success`；不能拿另一个提交、旧版本或只过部分平台的结果代替。
 - **三平台全绿才可创建和推送 tag**：tag 必须指向上述已验证 SHA，且去掉 `v` 后与该提交的 `package.json` 版本一致。任何平台失败、取消、跳过或尚未完成，都不能继续打 tag；说明失败原因并先修复。用户没有明确要求绕过时，不得自行以“先推标签、之后再修”处理。
+- **tag 后仍要跑正式发版 CI**：推送 tag 触发 `.github/workflows/release.yml`；继续跟进这一轮 tag push run，核对 `headSha` 与 tag 指向的提交一致，三个 build 和 release job 全部成功。打 tag 前的手动演练是额外门槛，不能替代 tag 后的这一轮 CI；`workflow_dispatch` 本身不会生成 Release。
+- **CI 成功后交付 Release 草稿**：工作流以 `draft: true` 创建 GitHub Release 并上传三平台安装包及 `SHA256SUMS.txt`。Agent 核对实际草稿与资产，结合上一版本以来的实际改动整理发布说明，再把草稿链接、正式 CI 链接、tag/SHA 和已知问题交给用户查看。发现重试转绿等情况要如实说明；CI 失败或没有草稿时不能声称已交付。
+- **公开发布由用户手动完成**：保持 Release 为 draft，由用户访问 GitHub 检查 CI、发布说明和安装包后手动 Publish。除非用户另行明确要求，Agent 不自动发布、不把草稿改为公开版本。
 - **提交变了就重新演练**：演练后修改任何代码、配置、依赖或版本号，都会产生新的候选 SHA，旧绿灯不再放行。发版记录在 `.superpowers/` 留候选 SHA、run URL、三个矩阵结果和本地预检命令。
 - **不要移动已推送的 tag 来补发修复**：保留失败现场，先完成修复与演练，再按用户指定的新版本发版。重跑只用于已证实的外部基础设施抖动，不能用反复重跑掩盖产品或测试问题。
 
