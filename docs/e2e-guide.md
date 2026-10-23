@@ -76,8 +76,10 @@ e2e 只用来证明单测证明不了的事：
 
 1. `npm run package`，然后 `npx playwright test e2e/<spec> --repeat-each 3 --retries 0`，三遍全绿再提交。
 2. 翻面：把被测行为改坏一次，确认它红；改回来。
-3. 新 spec，或改了环境相关的东西：打 tag 之前 `gh workflow run release.yml --ref <分支>` 在三个平台演练一遍
-   （演练不会发版：release job 只认 tag push）。
+3. 发版前固定候选提交 SHA（包括版本号），推送候选分支，再 `gh workflow run release.yml --ref <分支>`。
+   核对该 run 的 `headSha` 等于候选 SHA，且三个 build 矩阵项全部 `success`，然后才允许给**这个 SHA** 打 tag。
+   失败、取消、跳过或仍在运行都不放行；修改代码、配置、依赖或版本号后必须对新 SHA 重新演练。
+   演练不会发版（release job 只认 tag push），本地检查也不能代替三平台结果。详细门槛见根目录 `AGENTS.md`。
 4. CI 红了：先下载 `e2e-test-results-*` artifact 看报错里的实际数值与页面快照（`error-context.md`），在本机
    钉成同样的环境复现；复现不了就不下结论。失败信息里带上实际数值与现场（宽度、命中的元素、截图尺寸），
    下一轮就能直接定位。只有已证实的纯基建抖动（打 dmg 时 `hdiutil detach` 失败、GitHub 下载 504）才

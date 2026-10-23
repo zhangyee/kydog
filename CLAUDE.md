@@ -34,6 +34,15 @@ E2E（Playwright + Electron，需要先打包）：
 - `npm run cli:update` — 检查上游 CLI 新版本 + 同步其 skill 到 `src/skills/`，逐项 `[y/N]` 确认（交互式）
 - `npm run cli:update fastpaper@0.2.1` — 钉到指定版本（可回退），skill 跟着走同一个 tag；用位置参数，别写 `--tool`（npm 会吞掉它）
 
+## 发版门槛：同一提交先演练，全绿后才打 tag
+
+- **本地和 CI 共用项目的 Node 版本**：以 `.nvmrc` 为统一来源（目前 24），CI 的 `setup-node` 也从它读取。版本选择须结合本机开发环境、Electron 内置 Node 和依赖支持范围；不把旧 CI 配置当成必须迁就的标准。升级时一起改、一起验证。
+- **本地预检只负责提前发现本机可复现的问题**：用上述 Node 运行类型检查、lint 和全量单测；另设 `CI=1`、`KYDOG_REQUIRE_SYMLINK=1` 并用 `--max-old-space-size=2048` 做资源回归检查。2 GB 是额外压力条件，不是假装 macOS 能模拟 Windows/Intel。不要临时加大堆、放宽 timeout 或减少测试来制造绿灯；另外两个平台仍必须由真实 runner 验证。
+- **先定候选提交，再跑三平台**：把版本号等全部改完并提交，记录完整 SHA，推送候选分支，然后 `gh workflow run release.yml --ref <候选分支>`。核对该次 run 的 `headSha` **等于候选 SHA**，三个 build 矩阵项全部 `success`；不能拿另一个提交、旧版本或只过部分平台的结果代替。
+- **三平台全绿才可创建和推送 tag**：tag 必须指向上述已验证 SHA，且去掉 `v` 后与该提交的 `package.json` 版本一致。任何平台失败、取消、跳过或尚未完成，都不能继续打 tag；说明失败原因并先修复。用户没有明确要求绕过时，不得自行以“先推标签、之后再修”处理。
+- **提交变了就重新演练**：演练后修改任何代码、配置、依赖或版本号，都会产生新的候选 SHA，旧绿灯不再放行。发版记录在 `.superpowers/` 留候选 SHA、run URL、三个矩阵结果和本地预检命令。
+- **不要移动已推送的 tag 来补发修复**：保留失败现场，先完成修复与演练，再按用户指定的新版本发版。重跑只用于已证实的外部基础设施抖动，不能用反复重跑掩盖产品或测试问题。
+
 ## Windows 上跑测试：先开一次「开发者模式」
 
 有一批用例要**真的建符号链接**（考的是软链能不能越出目录、写入会不会穿透链接）。Windows 建符号链接需要 `SeCreateSymbolicLinkPrivilege`，普通用户默认没有，`fs.symlink` 直接抛 `EPERM`。

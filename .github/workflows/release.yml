@@ -25,7 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
-        with: { node-version: '22', cache: 'npm' }
+        with: { node-version-file: '.nvmrc', cache: 'npm' }
+      - name: Report build runtime
+        run: node -e "const os=require('node:os'),v8=require('node:v8'); console.log(JSON.stringify({node:process.version,platform:process.platform,arch:process.arch,cpus:os.availableParallelism(),memoryGiB:os.totalmem()/2**30,heapLimitMiB:v8.getHeapStatistics().heap_size_limit/2**20},null,2))"
       - name: Verify tag matches package.json version
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -59,6 +61,7 @@ jobs:
             catch (e) { console.log('symlink capability: UNAVAILABLE ->', e.code); }
             finally { fs.rmSync(d,{recursive:true,force:true}); }
           "
+      - run: npx tsc --noEmit
       - run: npm run lint
       - run: npm test
         env:
