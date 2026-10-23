@@ -721,6 +721,35 @@ export function serializeXResearchResult<T extends XResearchResult>(
   }
   // Drop whole optional source inventories before evidence bodies. Clone each
   // frame shell: two stage slots can honestly share the same collection object.
+  if (result.operation === 'read') {
+    const removed: { restore: () => void; path: string }[] = [];
+    for (const [index, row] of result.targets.entries()) {
+      for (const key of ['initialFrame', 'firstAdmittedFrame', 'terminalFrame'] as const) {
+        const frame = row.diagnostics?.[key];
+        if (!frame?.replyUiInventory) continue;
+        const retained = { ...frame };
+        delete retained.replyUiInventory;
+        row.diagnostics![key] = retained;
+        removed.push({
+          restore: () => { row.diagnostics![key] = frame; },
+          path: `targets.${index}.diagnostics.${key}.replyUiInventory`,
+        });
+      }
+    }
+    if (removed.length) {
+      // An exact lower bound without omission markers. If it is still too big,
+      // every earlier prefix (more inventories plus its markers) is also too big.
+      // Otherwise restore in reverse, including aliased diagnostic objects, and
+      // let the original ordered loop find the first fitting prefix.
+      value = update();
+      if (value.result.budgetUsage.outputBytes > maxBytes) {
+        for (const { path } of removed) mark(path);
+        value = update();
+      } else {
+        for (const { restore } of removed.reverse()) restore();
+      }
+    }
+  }
   if(result.operation==='read') for(const [index,row] of result.targets.entries()) {
     for(const key of ['initialFrame','firstAdmittedFrame','terminalFrame'] as const){
       const frame=row.diagnostics?.[key];if(!frame?.replyUiInventory)continue;
@@ -731,18 +760,54 @@ export function serializeXResearchResult<T extends XResearchResult>(
   }
   // Independent failure-frame bodies are optional; their exact own-parent gap
   // facts are required state. Remove whole items before touching current text.
-  if(result.operation==='read') for(const [index,row] of result.targets.entries()) {
-    const envelope=row.unscopedPosts;if(!envelope?.observations.length) continue;
-    const entries=[...envelope.observations];
-    const path=`targets.${index}.unscopedPosts.observations`;
-    if(!(result.metadataOmissions??=[]).includes(path)) result.metadataOmissions.push(path);
-    let lo=0,hi=entries.length;
-    while(lo<hi) {
-      const mid=Math.ceil((lo+hi)/2);envelope.observations=entries.slice(0,mid);
-      if(update().result.budgetUsage.outputBytes<=maxBytes)lo=mid;else hi=mid-1;
+  if (result.operation === 'read') {
+    const seen = new Set<NonNullable<typeof result.targets[number]['unscopedPosts']>>();
+    const optional = result.targets.flatMap((row, index) =>
+      {
+        const envelope = row.unscopedPosts;
+        if (!envelope?.observations.length || seen.has(envelope)) return [];
+        // A mutation of a shared envelope already affects its later rows. The
+        // original ordered loop visits only its first occurrence before return.
+        seen.add(envelope);
+        return [{ index, envelope, entries: envelope.observations }];
+      },
+    );
+    if (optional.length) {
+      const omissions = [...(result.metadataOmissions ?? [])];
+      const omitPrefix = (count: number) => {
+        result.metadataOmissions = [...omissions];
+        optional.forEach(({ index, envelope, entries }, i) => {
+          envelope.observations = i < count ? [] : entries;
+          if (i < count) mark(`targets.${index}.unscopedPosts.observations`);
+        });
+      };
+      // The previous ordered searches empty each earlier row until one can fit
+      // with all later rows still full. Locate that SAME boundary by row first,
+      // then search just its bodies. Every probe includes exact omission paths,
+      // inventories, counters and the whole JSON envelope, including escaping.
+      omitPrefix(optional.length);
+      value = update();
+      if (value.result.budgetUsage.outputBytes <= maxBytes) {
+        let lo = 1, hi = optional.length;
+        while (lo < hi) {
+          const mid = Math.floor((lo + hi) / 2);
+          omitPrefix(mid);
+          if (update().result.budgetUsage.outputBytes <= maxBytes) hi = mid;
+          else lo = mid + 1;
+        }
+        omitPrefix(lo);
+        const { envelope, entries } = optional[lo - 1];
+        lo = 0; hi = entries.length;
+        while (lo < hi) {
+          const mid = Math.ceil((lo + hi) / 2);
+          envelope.observations = entries.slice(0, mid);
+          if (update().result.budgetUsage.outputBytes <= maxBytes) lo = mid;
+          else hi = mid - 1;
+        }
+        envelope.observations = entries.slice(0, lo);
+        return update();
+      }
     }
-    envelope.observations=entries.slice(0,lo);value=update();
-    if(value.result.budgetUsage.outputBytes<=maxBytes)return value;
   }
   if (collection) {
     // Exact metadata-only probe. If even zero text is over the envelope, every

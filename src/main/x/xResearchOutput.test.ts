@@ -453,6 +453,26 @@ it('caps displaced body observations honestly and retains their known Article ci
   expect(serializeXResearchResult(capped.result)).toEqual(capped);
 });
 
+it('budgets a shared optional envelope once, at its first row',()=>{
+  const input={tabId:'tab',read:{objective:'read',targets:[{postId:'123'},{postId:'124'}],includeArticle:false,includeReplies:false,maxRepliesPerPost:0,maxScrollsPerPost:0,maxExpandActionsPerPost:0}};
+  const source=readResult(input,fixture([]).context);
+  const envelope={
+    observations:Array.from({length:10},(_,i)=>({observationId:`o${i}`,sourceKind:'rendered_ui' as const,postId:String(i),sourceUrl:`https://x.com/a/status/${i}`,author:{handle:'a',displayName:'A',profileUrl:'https://x.com/a'},text:'x'.repeat(1000),observedAt:'now',containerKind:'unscoped_post' as const,relationToTarget:'unproven' as const,observedContainer:'post' as const,truncation:{returned:1000,totalKnown:1000,truncated:false}})),
+    collection:{snapshotId:'snap',document:{epoch:1,routeRevision:0,navigationSequence:1,generation:'1'},location:{origin:'https://x.com',path:'/',q:null,f:null,fragment:null,redacted:false}},
+    inventory:{scope:'collection' as const,observed:10,retained:10,omitted:0,sourceInventoryTruncated:false,excludedNestedQuotes:0},previewGaps:[],
+  };
+  source.targets.forEach(row=>{row.unscopedPosts=envelope;});
+  const independent=structuredClone(source);
+  independent.targets[1].unscopedPosts=structuredClone(envelope);
+  const paths=(result:typeof source)=>result.metadataOmissions?.filter(p=>p.endsWith('unscopedPosts.observations'));
+  // With distinct envelopes, both rows need their own omission marker.
+  expect(paths(serializeXResearchResult(independent,undefined,15000).result)).toEqual(['targets.0.unscopedPosts.observations','targets.1.unscopedPosts.observations']);
+  const out=serializeXResearchResult(source,undefined,15000);
+  expect(paths(out.result)).toEqual(['targets.0.unscopedPosts.observations']);
+  expect(out.result.targets.map(row=>row.unscopedPosts!.observations.length)).toEqual([1,1]);
+  expect(out.result.budgetUsage.outputBytes).toBe(Buffer.byteLength(JSON.stringify(xResearchToolResult(out))));
+});
+
 it('budgets independent bodies before scoped history and protects every own-parent preview gap',async()=>{
   const cover='<div role="link" tabindex="0"><div data-testid="User-Name"><a href="/writer">@writer</a></div><div data-testid="article-cover-image">Article</div></div>';
   const html=Array.from({length:100},(_,i)=>post(String(1000+i),'b',('汉\\"😀').repeat(500)).replace('</article>',cover+'</article>')).join('');
@@ -462,7 +482,22 @@ it('budgets independent bodies before scoped history and protects every own-pare
   expect(actual.targets[0].unscopedPosts?.previewGaps).toHaveLength(100);
   for(const count of [1,20]){
     const source=structuredClone(actual);source.targets=Array.from({length:count},()=>structuredClone(actual.targets[0]));
-    const out=serializeXResearchResult(source),bytes=Buffer.byteLength(JSON.stringify(xResearchToolResult(out)),'utf8');
+    // Bound actual serialization work, not wall time on a particular runner.
+    // Repeatedly probing every row against the entire envelope makes this
+    // quadratic in row count, even when no optional body can possibly fit.
+    const inputBytes=Buffer.byteLength(JSON.stringify(source),'utf8');
+    const stringify=JSON.stringify;
+    let serializedBytes=0;
+    // A vi.fn spy would retain every large serialized string in mock.results.
+    JSON.stringify=((...args:Parameters<typeof JSON.stringify>)=>{
+      const text=stringify(...args);
+      if(text)serializedBytes+=Buffer.byteLength(text,'utf8');
+      return text;
+    }) as typeof JSON.stringify;
+    let out:ReturnType<typeof serializeXResearchResult<typeof source>>;
+    try { out=serializeXResearchResult(source); } finally { JSON.stringify=stringify; }
+    expect(serializedBytes).toBeLessThan(inputBytes*256);
+    const bytes=Buffer.byteLength(JSON.stringify(xResearchToolResult(out)),'utf8');
     expect(bytes).toBeLessThanOrEqual(X_RESEARCH_MAX_OUTPUT_BYTES);
     expect(out.result.budgetUsage.outputBytes).toBe(bytes);
     const projected=JSON.parse(out.text);
